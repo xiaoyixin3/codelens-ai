@@ -32,3 +32,18 @@ repository.
 
 The intentionally unsafe pull request remains unmerged and is labelled in its
 description as organization-installation validation material.
+
+## Controlled restart regression
+
+The local beta supervisor was then restarted with Cloudflare transport pinned
+to HTTP/2. It created and verified a new public Tunnel URL before updating the
+GitHub App webhook. A follow-up commit on the same pull request produced a new
+`pull_request.synchronize` delivery and completed a second review:
+
+- Follow-up head SHA: `88adcecbd8ddff7c230f513e4621f40d099ce6ad`
+- Review Check: [CodeLens AI Review after restart](https://github.com/codelens-ai-lab/codelens-beta-test/runs/105912967028)
+- Result: completed, `neutral`, one verified annotation at `src/jobs.ts:2`
+
+This verifies controlled URL rotation and review recovery for the local beta.
+It does not satisfy the separate fixed-HTTPS release gate; a stable Named
+Tunnel or managed deployment is still required.

@@ -22,6 +22,15 @@ export function buildWebhookUrl(tunnelUrl: string): string {
   return url.toString().replace(/\/$/, '');
 }
 
+export function normalizePublicBaseUrl(value: string): string {
+  const url = new URL(value);
+  if (url.protocol !== 'https:') throw new Error('CODELENS_PUBLIC_BASE_URL must use HTTPS.');
+  if (url.username || url.password || url.search || url.hash || url.pathname !== '/') {
+    throw new Error('CODELENS_PUBLIC_BASE_URL must be an HTTPS origin without credentials, path, query, or fragment.');
+  }
+  return url.origin;
+}
+
 function runChecked(command: string, args: string[], label: string): void {
   const result = spawnSync(command, args, {
     cwd: root,
@@ -52,10 +61,16 @@ function resolveCloudflared(): string {
   throw new Error('cloudflared was not found. Install it or set CLOUDFLARED_BIN.');
 }
 
-function startChild(name: string, command: string, args: string[], pipeOutput = false): ChildProcess {
+function startChild(
+  name: string,
+  command: string,
+  args: string[],
+  pipeOutput = false,
+  extraEnvironment: Record<string, string> = {}
+): ChildProcess {
   const child = spawn(command, args, {
     cwd: root,
-    env: process.env,
+    env: { ...process.env, ...extraEnvironment },
     stdio: pipeOutput ? ['ignore', 'pipe', 'pipe'] : ['ignore', 'inherit', 'inherit']
   });
   children.set(child, name);
@@ -139,15 +154,41 @@ async function main(): Promise<void> {
   await waitForReady(localReadyUrl);
   startChild('worker', process.execPath, ['--import', 'tsx', 'apps/worker/src/main.ts']);
 
+  const configuredPublicBaseUrl = process.env.CODELENS_PUBLIC_BASE_URL?.trim();
+  const configuredTunnelToken = process.env.CLOUDFLARE_TUNNEL_TOKEN?.trim();
+  if (Boolean(configuredPublicBaseUrl) !== Boolean(configuredTunnelToken)) {
+    throw new Error(
+      'CODELENS_PUBLIC_BASE_URL and CLOUDFLARE_TUNNEL_TOKEN must be configured together.'
+    );
+  }
+
   const cloudflared = resolveCloudflared();
-  const tunnel = startChild(
-    'Cloudflare Tunnel',
-    cloudflared,
-    ['tunnel', '--no-autoupdate', '--url', `http://127.0.0.1:${config.PORT}`],
-    true
-  );
-  const tunnelUrl = await waitForTunnelUrl(tunnel);
-  await waitForReady(`${tunnelUrl}/readyz`);
+  let tunnelUrl: string;
+  let mode: 'local-beta-fixed' | 'local-beta-quick';
+  if (configuredPublicBaseUrl && configuredTunnelToken) {
+    tunnelUrl = normalizePublicBaseUrl(configuredPublicBaseUrl);
+    mode = 'local-beta-fixed';
+    startChild(
+      'Cloudflare Named Tunnel',
+      cloudflared,
+      ['tunnel', '--no-autoupdate', '--protocol', 'http2', 'run'],
+      true,
+      { TUNNEL_TOKEN: configuredTunnelToken }
+    );
+  } else {
+    mode = 'local-beta-quick';
+    const tunnel = startChild(
+      'Cloudflare Quick Tunnel',
+      cloudflared,
+      [
+        'tunnel', '--no-autoupdate', '--protocol', 'http2',
+        '--url', `http://127.0.0.1:${config.PORT}`
+      ],
+      true
+    );
+    tunnelUrl = await waitForTunnelUrl(tunnel);
+  }
+  await waitForReady(`${tunnelUrl}/readyz`, 90_000);
 
   const webhookUrl = buildWebhookUrl(tunnelUrl);
   const github = new App({ appId: config.GITHUB_APP_ID, privateKey: config.GITHUB_PRIVATE_KEY });
@@ -185,9 +226,10 @@ async function main(): Promise<void> {
 
   console.log(JSON.stringify({
     status: 'ready',
-    mode: 'local-beta',
+    mode,
     appId: config.GITHUB_APP_ID,
     webhookUrl,
+    publicBaseUrl: tunnelUrl,
     localReadyUrl
   }, null, 2));
 

@@ -44,6 +44,22 @@ Quick Tunnels have no uptime guarantee and their URL changes after restart. The
 supervisor updates GitHub automatically, which is useful for a local beta, but a
 fixed production domain remains required for unattended operation.
 
+For a fixed Cloudflare Named Tunnel, create a remotely managed Tunnel and map
+its published application hostname to `http://localhost:3000`. Put the public
+HTTPS origin and Tunnel token in the ignored `.env` file:
+
+```dotenv
+CODELENS_PUBLIC_BASE_URL=https://reviews.example.com
+CLOUDFLARE_TUNNEL_TOKEN=replace-with-the-tunnel-token
+```
+
+With both values present, `npm run beta:local` starts the Named Tunnel using the
+token through the child-process environment, verifies public readiness, and
+keeps the GitHub App webhook on the fixed URL. The token is never included in
+the process command line. Without those values, the supervisor continues to use
+a temporary Quick Tunnel. Both modes use HTTP/2 for the Tunnel transport to
+support networks where outbound QUIC is unreliable.
+
 ## 3. Start production Compose
 
 ```bash
