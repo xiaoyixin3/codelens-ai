@@ -12,6 +12,17 @@ export interface ReplayCase {
   id: string;
   context: PullRequestContext;
   expectedFindings: ExpectedFinding[];
+  approval:
+    | { status: 'candidate' }
+    | { status: 'approved'; approvedBy: string; approvedAt: string; notes?: string };
+  provenance:
+    | { kind: 'fixture' }
+    | {
+        kind: 'historical_pr';
+        sourceUrl: string;
+        repositoryLicense: string;
+        collectedAt: string;
+      };
 }
 
 export const ReplayCaseSchema = z.object({
@@ -21,11 +32,35 @@ export const ReplayCaseSchema = z.object({
     ruleId: z.string().trim().min(1),
     path: z.string().trim().min(1),
     line: z.number().int().positive()
-  }))
+  })),
+  approval: z.discriminatedUnion('status', [
+    z.object({ status: z.literal('candidate') }),
+    z.object({
+      status: z.literal('approved'),
+      approvedBy: z.string().trim().min(2),
+      approvedAt: z.string().datetime({ offset: true }),
+      notes: z.string().trim().min(1).optional()
+    })
+  ]),
+  provenance: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('fixture') }),
+    z.object({
+      kind: z.literal('historical_pr'),
+      sourceUrl: z.string().url(),
+      repositoryLicense: z.string().trim().min(1),
+      collectedAt: z.string().datetime({ offset: true })
+    })
+  ])
 });
+
+export function isApprovedHistoricalReplayCase(item: ReplayCase): boolean {
+  return item.approval.status === 'approved' && item.provenance.kind === 'historical_pr';
+}
 
 export interface BenchmarkReport {
   cases: number;
+  positiveCases: number;
+  negativeCases: number;
   expected: number;
   predicted: number;
   truePositive: number;
@@ -39,6 +74,8 @@ export interface BenchmarkReport {
 
 export interface BenchmarkThresholds {
   minCases: number;
+  minPositiveCases: number;
+  minNegativeCases: number;
   minPrecision: number;
   minRecall: number;
   maxP95LatencyMs: number;
@@ -118,6 +155,14 @@ export function evaluateBenchmarkGate(
     throw new Error('Benchmark minimum case count must be a positive integer.');
   }
   for (const [name, value] of [
+    ['positive case', thresholds.minPositiveCases],
+    ['negative case', thresholds.minNegativeCases]
+  ] as const) {
+    if (!Number.isInteger(value) || value < 0) {
+      throw new Error(`Benchmark minimum ${name} count must be a nonnegative integer.`);
+    }
+  }
+  for (const [name, value] of [
     ['minimum precision', thresholds.minPrecision],
     ['minimum recall', thresholds.minRecall]
   ] as const) {
@@ -132,6 +177,12 @@ export function evaluateBenchmarkGate(
   const failures: string[] = [];
   if (report.cases < thresholds.minCases) {
     failures.push(`cases ${report.cases} < ${thresholds.minCases}`);
+  }
+  if (report.positiveCases < thresholds.minPositiveCases) {
+    failures.push(`positive cases ${report.positiveCases} < ${thresholds.minPositiveCases}`);
+  }
+  if (report.negativeCases < thresholds.minNegativeCases) {
+    failures.push(`negative cases ${report.negativeCases} < ${thresholds.minNegativeCases}`);
   }
   if (report.precision < thresholds.minPrecision) {
     failures.push(`precision ${report.precision.toFixed(4)} < ${thresholds.minPrecision.toFixed(4)}`);
@@ -178,8 +229,11 @@ export async function runBenchmark(cases: ReplayCase[]): Promise<BenchmarkReport
   const falsePositive = predicted - truePositive;
   const falseNegative = expected - truePositive;
   const sorted = latency.sort((left, right) => left - right);
+  const positiveCases = cases.filter((item) => item.expectedFindings.length > 0).length;
   return {
     cases: cases.length,
+    positiveCases,
+    negativeCases: cases.length - positiveCases,
     expected,
     predicted,
     truePositive,

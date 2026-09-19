@@ -3,6 +3,7 @@ import path from 'node:path';
 import {
   ReplayCaseSchema,
   evaluateBenchmarkGate,
+  isApprovedHistoricalReplayCase,
   runBenchmark,
   type BenchmarkThresholds,
   type ReplayCase
@@ -38,11 +39,22 @@ function readNumber(name: string, fallback: number): number {
 
 const thresholds: BenchmarkThresholds = {
   minCases: readNumber('BENCHMARK_MIN_CASES', 100),
+  minPositiveCases: readNumber('BENCHMARK_MIN_POSITIVE_CASES', 20),
+  minNegativeCases: readNumber('BENCHMARK_MIN_NEGATIVE_CASES', 20),
   minPrecision: readNumber('BENCHMARK_MIN_PRECISION', 0.8),
   minRecall: readNumber('BENCHMARK_MIN_RECALL', 0.7),
   maxP95LatencyMs: readNumber('BENCHMARK_MAX_P95_MS', 1_000)
 };
-const report = await runBenchmark(cases);
+const approvedCases = cases.filter(isApprovedHistoricalReplayCase);
+const evaluatedCases = gateEnabled ? approvedCases : cases;
+const report = await runBenchmark(evaluatedCases);
 const gate = evaluateBenchmarkGate(report, thresholds);
-console.log(JSON.stringify({ dataset: datasetPath, ...report, gate }, null, 2));
+console.log(JSON.stringify({
+  dataset: datasetPath,
+  loadedCases: cases.length,
+  approvedHistoricalCases: approvedCases.length,
+  excludedFromGate: gateEnabled ? cases.length - approvedCases.length : 0,
+  ...report,
+  gate
+}, null, 2));
 if (gateEnabled && !gate.passed) process.exitCode = 1;

@@ -18,7 +18,8 @@ Automated gates last verified on 2026-09-19 with PostgreSQL 17, Redis 8.10.1, an
 - [ ] Fixed HTTPS deployment endpoint configured and recovery verified
 - [ ] GitHub App permissions and webhook events verified in a test organization
 - [ ] At least 100 approved historical PRs labelled and replayed
-  - Run `npm run benchmark:gate -- benchmarks/approved-replay.jsonl`; defaults require 100 cases, precision ≥ 0.80, recall ≥ 0.70, and p95 evaluation latency ≤ 1,000 ms.
+  - Run `npm run benchmark:gate -- benchmarks/approved-replay.jsonl`; defaults require 100 cases, at least 20 positive and 20 negative cases, precision ≥ 0.80, recall ≥ 0.70, and p95 evaluation latency ≤ 1,000 ms.
+  - Candidate intake evidence: [`docs/benchmark-candidate-collection-2026-09-19.md`](docs/benchmark-candidate-collection-2026-09-19.md). Candidates do not satisfy this gate until they are labelled and approved.
 - [ ] Five to ten design-partner repositories approved for staged rollout
 - [ ] `npm run beta:readiness` reports at least 20 eligible reviews and a seven-day success rate of at least 95%
 - [x] Retention, deletion, backup, and restore drills completed

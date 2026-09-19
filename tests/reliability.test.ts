@@ -124,10 +124,13 @@ describe('historical replay', () => {
           patch: '@@ -1,1 +1,1 @@\n-old();\n+items.forEach(async (item) => save(item));'
         }]
       },
-      expectedFindings: [{ ruleId: 'concurrency/no-async-foreach', path: 'src/jobs.ts', line: 1 }]
+      expectedFindings: [{ ruleId: 'concurrency/no-async-foreach', path: 'src/jobs.ts', line: 1 }],
+      approval: { status: 'candidate' },
+      provenance: { kind: 'fixture' }
     }]);
 
     expect(report).toMatchObject({ cases: 1, precision: 1, recall: 1, truePositive: 1 });
+    expect(report).toMatchObject({ positiveCases: 1, negativeCases: 0 });
     expect(report.insufficientSampleWarning).toContain('1/100');
   });
 
@@ -135,6 +138,8 @@ describe('historical replay', () => {
     const { evaluateBenchmarkGate } = await import('@codelens/evaluation');
     const result = evaluateBenchmarkGate({
       cases: 99,
+      positiveCases: 20,
+      negativeCases: 79,
       expected: 10,
       predicted: 10,
       truePositive: 7,
@@ -145,6 +150,8 @@ describe('historical replay', () => {
       latencyMs: { p50: 10, p95: 1_500, max: 1_800 }
     }, {
       minCases: 100,
+      minPositiveCases: 20,
+      minNegativeCases: 20,
       minPrecision: 0.8,
       minRecall: 0.7,
       maxP95LatencyMs: 1_000
@@ -156,6 +163,61 @@ describe('historical replay', () => {
       'precision 0.7000 < 0.8000',
       'p95 latency 1500ms > 1000ms'
     ]);
+  });
+
+  it('rejects an unbalanced all-negative benchmark', async () => {
+    const { evaluateBenchmarkGate } = await import('@codelens/evaluation');
+    const result = evaluateBenchmarkGate({
+      cases: 100,
+      positiveCases: 0,
+      negativeCases: 100,
+      expected: 0,
+      predicted: 0,
+      truePositive: 0,
+      falsePositive: 0,
+      falseNegative: 0,
+      precision: 1,
+      recall: 1,
+      latencyMs: { p50: 1, p95: 2, max: 3 }
+    }, {
+      minCases: 100,
+      minPositiveCases: 20,
+      minNegativeCases: 20,
+      minPrecision: 0.8,
+      minRecall: 0.7,
+      maxP95LatencyMs: 1_000
+    });
+
+    expect(result.passed).toBe(false);
+    expect(result.failures).toEqual(['positive cases 0 < 20']);
+  });
+
+  it('counts only approved historical cases as release evidence', async () => {
+    const { isApprovedHistoricalReplayCase } = await import('@codelens/evaluation');
+    const base = {
+      id: 'candidate',
+      context: {
+        owner: 'sample', repo: 'replay', number: 1, title: 'Example', body: '',
+        baseSha: 'aaaaaaa', headSha: 'bbbbbbb', files: []
+      },
+      expectedFindings: []
+    };
+
+    expect(isApprovedHistoricalReplayCase({
+      ...base,
+      approval: { status: 'candidate' },
+      provenance: { kind: 'historical_pr', sourceUrl: 'https://github.com/a/b/pull/1', repositoryLicense: 'MIT', collectedAt: '2026-09-19T00:00:00.000Z' }
+    })).toBe(false);
+    expect(isApprovedHistoricalReplayCase({
+      ...base,
+      approval: { status: 'approved', approvedBy: 'reviewer', approvedAt: '2026-09-19T01:00:00.000Z' },
+      provenance: { kind: 'fixture' }
+    })).toBe(false);
+    expect(isApprovedHistoricalReplayCase({
+      ...base,
+      approval: { status: 'approved', approvedBy: 'reviewer', approvedAt: '2026-09-19T01:00:00.000Z' },
+      provenance: { kind: 'historical_pr', sourceUrl: 'https://github.com/a/b/pull/1', repositoryLicense: 'MIT', collectedAt: '2026-09-19T00:00:00.000Z' }
+    })).toBe(true);
   });
 
   it('requires enough eligible reviews and a 95 percent beta success rate', async () => {

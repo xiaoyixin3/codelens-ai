@@ -11,3 +11,4 @@ coverage/
 dist/
 .codelens-workspaces/
 *.log
+benchmarks/candidates/
