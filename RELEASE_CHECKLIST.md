@@ -15,6 +15,7 @@ Automated gates last verified on 2026-09-19 with PostgreSQL 17, Redis 8.10.1, an
 
 ## Manual gates
 
+- [ ] Fixed HTTPS deployment endpoint configured and recovery verified
 - [ ] GitHub App permissions and webhook events verified in a test organization
 - [ ] At least 100 approved historical PRs labelled and replayed
   - Run `npm run benchmark:gate -- benchmarks/approved-replay.jsonl`; defaults require 100 cases, precision ≥ 0.80, recall ≥ 0.70, and p95 evaluation latency ≤ 1,000 ms.

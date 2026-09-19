@@ -1,6 +1,9 @@
 import { z } from 'zod';
 
-const optionalString = z.string().trim().min(1).optional();
+const emptyToUndefined = (value: unknown) =>
+  typeof value === 'string' && value.trim() === '' ? undefined : value;
+const optionalString = z.preprocess(emptyToUndefined, z.string().trim().min(1).optional());
+const optionalUrl = z.preprocess(emptyToUndefined, z.string().url().optional());
 
 const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -12,10 +15,10 @@ const EnvSchema = z.object({
   GITHUB_PRIVATE_KEY: optionalString,
   GITHUB_WEBHOOK_SECRET: z.string().min(16),
   WEBHOOK_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(300),
-  LLM_BASE_URL: z.string().url().optional(),
+  LLM_BASE_URL: optionalUrl,
   LLM_API_KEY: optionalString,
   LLM_MODEL: optionalString,
-  LLM_FALLBACK_BASE_URL: z.string().url().optional(),
+  LLM_FALLBACK_BASE_URL: optionalUrl,
   LLM_FALLBACK_API_KEY: optionalString,
   LLM_FALLBACK_MODEL: optionalString,
   LLM_MAX_CALLS_PER_RUN: z.coerce.number().int().nonnegative().default(4),

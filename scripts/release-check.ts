@@ -22,6 +22,7 @@ const required = [
   'dist/worker.js',
   'dist/migrate.js',
   'dist/beta-readiness.js',
+  'dist/local-beta.js',
   'dist/github-preflight.js',
   'dist/smoke-pipeline.js',
   'dist/retention.js',
@@ -71,7 +72,7 @@ console.log(JSON.stringify({
   unpinnedActions,
   workflowUsesReadOnlyPermissions,
   manualGates: [
-    'Apply migrations and boot production Compose against running Docker.',
+    'Configure a fixed HTTPS deployment endpoint and verify recovery.',
     'Replay at least 100 approved historical PRs.',
     'Complete a 5-10 repository design-partner rollout.',
     'Observe at least 95% successful reviews for seven days.',

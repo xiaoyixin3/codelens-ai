@@ -133,6 +133,10 @@ docker compose -f infra/compose.production.yml up -d --build
 
 The image runs compiled JavaScript as the non-root `node` user. Migration completion gates API and worker startup. Operational retention is available through the `operations` Compose profile; backup, deletion, and rollback procedures are documented in [OPERATIONS.md](OPERATIONS.md).
 
+For a local, single-machine beta with an automatically managed temporary HTTPS
+tunnel, use `npm run beta:local`. See [INSTALLATION.md](INSTALLATION.md) for the
+runtime requirements and limitations.
+
 ## Structured summary providers
 
 Without LLM settings, the worker generates a deterministic summary from changed-file metadata. This is useful for local development and safe degradation.
@@ -257,7 +261,7 @@ The default lifecycle keeps terminal reviews and model telemetry for 90 days and
 - Calls resolved within the same file or through direct imports have stronger confidence; dynamic calls remain explicit `unresolved:` targets.
 - Tree-sitter and additional language adapters are deferred until the TypeScript/JavaScript path is validated.
 - Token telemetry depends on the provider returning a compatible `usage` object; monetary cost is not calculated yet.
-- The production image has not been booted in this workspace because its Docker daemon is unavailable.
+- The production image and dependency-gated startup are exercised in CI; the current local beta endpoint still uses a temporary tunnel rather than a fixed production domain.
 - The beta tag remains gated on a 100-PR approved replay set, 5–10 design partners, and seven days at ≥95% success.
 
 Automated beta gates pass locally. See [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) for the remaining environment and rollout gates before creating the git tag.

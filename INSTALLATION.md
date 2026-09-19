@@ -26,6 +26,24 @@ npm run github:preflight
 
 The preflight authenticates as the App, finds the repository installation, verifies repository access, and checks the required permissions. Its output contains App and installation metadata only; it never prints the private key or an installation token.
 
+### Local beta supervisor
+
+For a single-machine beta, install Docker and `cloudflared`, then run:
+
+```bash
+npm run beta:local
+```
+
+The supervisor starts the development PostgreSQL and Redis services, applies
+migrations, starts the API and worker, creates a temporary HTTPS tunnel, verifies
+local and public readiness, and updates the GitHub App webhook URL. If the
+default host ports are occupied, set `POSTGRES_HOST_PORT`, `REDIS_HOST_PORT`,
+`DATABASE_URL`, and `REDIS_URL` consistently in `.env`.
+
+Quick Tunnels have no uptime guarantee and their URL changes after restart. The
+supervisor updates GitHub automatically, which is useful for a local beta, but a
+fixed production domain remains required for unattended operation.
+
 ## 3. Start production Compose
 
 ```bash

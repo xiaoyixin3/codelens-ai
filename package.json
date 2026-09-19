@@ -24,6 +24,7 @@
     "benchmark": "node --env-file-if-exists=.env --import tsx scripts/benchmark.ts",
     "benchmark:gate": "node --env-file-if-exists=.env --import tsx scripts/benchmark.ts --gate",
     "beta:readiness": "node --env-file-if-exists=.env --import tsx scripts/beta-readiness.ts",
+    "beta:local": "node --env-file-if-exists=.env --import tsx scripts/local-beta.ts",
     "smoke:pipeline": "node --env-file-if-exists=.env --import tsx scripts/smoke-pipeline.ts",
     "github:preflight": "node --env-file-if-exists=.env --import tsx scripts/github-preflight.ts",
     "db:migrate": "tsx scripts/migrate.ts",
