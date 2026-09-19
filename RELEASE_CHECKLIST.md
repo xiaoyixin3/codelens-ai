@@ -16,7 +16,8 @@ Automated gates last verified on 2026-09-19 with PostgreSQL 17, Redis 8.10.1, an
 ## Manual gates
 
 - [ ] Fixed HTTPS deployment endpoint configured and recovery verified
-- [ ] GitHub App permissions and webhook events verified in a test organization
+- [x] GitHub App permissions and webhook events verified in a test organization
+  - Evidence: [`docs/organization-validation-2026-09-19.md`](docs/organization-validation-2026-09-19.md)
 - [ ] At least 100 approved historical PRs labelled and replayed
   - Run `npm run benchmark:gate -- benchmarks/approved-replay.jsonl`; defaults require 100 cases, at least 20 positive and 20 negative cases, precision ≥ 0.80, recall ≥ 0.70, and p95 evaluation latency ≤ 1,000 ms.
   - Candidate intake evidence: [`docs/benchmark-candidate-collection-2026-09-19.md`](docs/benchmark-candidate-collection-2026-09-19.md). Candidates do not satisfy this gate until they are labelled and approved.
