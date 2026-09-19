@@ -50,6 +50,9 @@ This deletes review runs and cascaded findings/publications, associated model te
 
 Back up PostgreSQL volumes before deployment. Database migrations are forward-only. Roll back application images only when the older image understands the current schema; otherwise restore the matching database backup.
 
+The latest isolated retention, deletion, backup, and restore exercise is recorded in
+[`docs/operations-drill-2026-09-19.md`](docs/operations-drill-2026-09-19.md).
+
 ## Incident response
 
 Pause the worker first, preserve logs and the affected run IDs, rotate any possibly exposed secret, and disable the GitHub App installation if publication safety is uncertain. Never paste raw repository content into an incident ticket without authorization.

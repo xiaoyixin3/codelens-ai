@@ -1,4 +1,5 @@
-import { readdir, readFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const root = process.cwd();
@@ -23,20 +24,24 @@ interface Finding {
   kind: string;
 }
 
-async function collectFiles(directory: string): Promise<string[]> {
-  const entries = await readdir(directory, { withFileTypes: true });
-  const files: string[] = [];
-  for (const entry of entries) {
-    if (entry.isDirectory() && excludedDirectories.has(entry.name)) continue;
-    const absolute = path.join(directory, entry.name);
-    if (entry.isDirectory()) files.push(...await collectFiles(absolute));
-    else if (entry.isFile()) files.push(absolute);
-  }
-  return files;
+function collectFiles(): string[] {
+  const output = execFileSync(
+    'git',
+    ['ls-files', '-z', '--cached', '--others', '--exclude-standard'],
+    { cwd: root, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 }
+  );
+  return output
+    .split('\0')
+    .filter(Boolean)
+    .filter((relative) => !relative.split('/').some((part) => excludedDirectories.has(part)))
+    .map((relative) => path.resolve(root, relative));
 }
 
 const findings: Finding[] = [];
-const files = await collectFiles(root);
+// Scan everything Git could publish: tracked files plus untracked, non-ignored
+// files. Deliberately ignored runtime secrets remain local, while a force-added
+// .env or private key is still scanned and rejected.
+const files = collectFiles();
 for (const absolute of files) {
   const relative = path.relative(root, absolute).replaceAll('\\', '/');
   const basename = path.basename(absolute);

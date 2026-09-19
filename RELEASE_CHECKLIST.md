@@ -20,7 +20,8 @@ Automated gates last verified on 2026-09-19 with PostgreSQL 17, Redis 8.10.1, an
   - Run `npm run benchmark:gate -- benchmarks/approved-replay.jsonl`; defaults require 100 cases, precision ≥ 0.80, recall ≥ 0.70, and p95 evaluation latency ≤ 1,000 ms.
 - [ ] Five to ten design-partner repositories approved for staged rollout
 - [ ] `npm run beta:readiness` reports at least 20 eligible reviews and a seven-day success rate of at least 95%
-- [ ] Retention, deletion, backup, and restore drills completed
+- [x] Retention, deletion, backup, and restore drills completed
+  - Evidence: [`docs/operations-drill-2026-09-19.md`](docs/operations-drill-2026-09-19.md)
 - [ ] Model-provider account budget and alerting configured
 - [ ] Maintainer has approved the release notes and git tag
 
