@@ -1,0 +1,25 @@
+version: 1
+
+review:
+  language: en
+  blocking: false
+  maxInlineComments: 8
+  minimumConfidence:
+    critical: 0.85
+    high: 0.85
+    medium: 0.80
+
+include:
+  - "src/**/*.{ts,tsx,js,jsx}"
+
+exclude:
+  - "**/*.generated.ts"
+  - "**/dist/**"
+  - "**/vendor/**"
+
+rules:
+  - key: payment-idempotency
+    content: "Payment writes must use an idempotency key."
+    scope: "src/payment/**"
+    severity: high
+    enabled: true

@@ -1,0 +1,34 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "baseUrl": ".",
+    "paths": {
+      "@codelens/config": ["packages/config/src/index.ts"],
+      "@codelens/code-index": ["packages/code-index/src/index.ts"],
+      "@codelens/contracts": ["packages/contracts/src/index.ts"],
+      "@codelens/evaluation": ["packages/evaluation/src/index.ts"],
+      "@codelens/github": ["packages/github/src/index.ts"],
+      "@codelens/impact-engine": ["packages/impact-engine/src/index.ts"],
+      "@codelens/llm-runtime": ["packages/llm-runtime/src/index.ts"],
+      "@codelens/lifecycle": ["packages/lifecycle/src/index.ts"],
+      "@codelens/persistence": ["packages/persistence/src/index.ts"],
+      "@codelens/project-policy": ["packages/project-policy/src/index.ts"],
+      "@codelens/queue": ["packages/queue/src/index.ts"],
+      "@codelens/resilience": ["packages/resilience/src/index.ts"],
+      "@codelens/risk-review": ["packages/risk-review/src/index.ts"],
+      "@codelens/review-core": ["packages/review-core/src/index.ts"],
+      "@codelens/security": ["packages/security/src/index.ts"]
+    },
+    "types": ["node", "vitest/globals"]
+  },
+  "include": ["apps/**/*.ts", "packages/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts"]
+}

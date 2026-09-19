@@ -1,0 +1,100 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: codelens
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: codelens
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U codelens"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - codelens-postgres:/var/lib/postgresql/data
+
+  redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - codelens-redis:/data
+
+  migrate:
+    build:
+      context: ..
+    image: codelens-ai:${CODELENS_IMAGE_TAG:-1.0.0-beta.1}
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      DATABASE_URL: postgres://codelens:${POSTGRES_PASSWORD}@postgres:5432/codelens
+      REDIS_URL: redis://redis:6379
+    command: ["node", "dist/migrate.js"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    image: codelens-ai:${CODELENS_IMAGE_TAG:-1.0.0-beta.1}
+    restart: unless-stopped
+    init: true
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      DATABASE_URL: postgres://codelens:${POSTGRES_PASSWORD}@postgres:5432/codelens
+      REDIS_URL: redis://redis:6379
+    command: ["node", "dist/api.js"]
+    ports:
+      - "${PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  worker:
+    image: codelens-ai:${CODELENS_IMAGE_TAG:-1.0.0-beta.1}
+    restart: unless-stopped
+    init: true
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      DATABASE_URL: postgres://codelens:${POSTGRES_PASSWORD}@postgres:5432/codelens
+      REDIS_URL: redis://redis:6379
+    command: ["node", "dist/worker.js"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  retention:
+    image: codelens-ai:${CODELENS_IMAGE_TAG:-1.0.0-beta.1}
+    profiles: ["operations"]
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      DATABASE_URL: postgres://codelens:${POSTGRES_PASSWORD}@postgres:5432/codelens
+    command: ["node", "dist/retention.js"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  codelens-postgres:
+  codelens-redis:

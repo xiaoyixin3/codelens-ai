@@ -1,0 +1,17 @@
+version: 1
+review:
+  language: en
+  blocking: false
+  maxInlineComments: 5
+  minimumConfidence:
+    high: 0.9
+    medium: 0.85
+include:
+  - "src/**"
+exclude:
+  - "**/*.generated.ts"
+rules:
+  - key: payment-idempotency
+    content: "Payment mutations must use an idempotency key."
+    scope: "src/payment/**"
+    severity: high

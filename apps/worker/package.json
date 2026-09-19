@@ -1,0 +1,5 @@
+{
+  "name": "@codelens/worker",
+  "private": true,
+  "type": "module"
+}

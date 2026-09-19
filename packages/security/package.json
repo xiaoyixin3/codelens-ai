@@ -1,0 +1,6 @@
+{
+  "name": "@codelens/security",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts"
+}

@@ -1,0 +1,13 @@
+node_modules/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+.pnpm-store/
+coverage/
+dist/
+.codelens-workspaces/
+*.log

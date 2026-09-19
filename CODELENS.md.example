@@ -1,0 +1,6 @@
+# CodeLens project guidance
+
+- Payment writes must be idempotent and safe to retry.
+- Never include credentials or customer data in logs.
+- Database migrations must be backward compatible during rolling deployment.
+- External calls must not execute while a database transaction is open.

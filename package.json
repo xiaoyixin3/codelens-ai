@@ -1,0 +1,51 @@
+{
+  "name": "codelens-ai",
+  "version": "1.0.0-beta.1",
+  "private": true,
+  "type": "module",
+  "packageManager": "npm@11.17.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev:api": "tsx watch apps/api/src/main.ts",
+    "dev:worker": "tsx watch apps/worker/src/main.ts",
+    "start:api": "tsx apps/api/src/main.ts",
+    "start:worker": "tsx apps/worker/src/main.ts",
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "security:scan": "node --import tsx scripts/scan-secrets.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "benchmark": "node --env-file-if-exists=.env --import tsx scripts/benchmark.ts",
+    "benchmark:gate": "node --env-file-if-exists=.env --import tsx scripts/benchmark.ts --gate",
+    "beta:readiness": "node --env-file-if-exists=.env --import tsx scripts/beta-readiness.ts",
+    "smoke:pipeline": "node --env-file-if-exists=.env --import tsx scripts/smoke-pipeline.ts",
+    "github:preflight": "node --env-file-if-exists=.env --import tsx scripts/github-preflight.ts",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "data:retain": "tsx scripts/retention.ts",
+    "data:delete": "tsx scripts/delete-repository-data.ts",
+    "release:check": "npm run security:scan && npm run typecheck && npm test && npm run build && tsx scripts/release-check.ts"
+  },
+  "dependencies": {
+    "bullmq": "^6.0.0",
+    "fastify": "^5.0.0",
+    "ioredis": "^5.11.1",
+    "minimatch": "^10.2.6",
+    "octokit": "^5.0.0",
+    "postgres": "^3.4.0",
+    "typescript": "^5.9.0",
+    "yaml": "^2.9.1",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsup": "^8.5.0",
+    "tsx": "^4.0.0",
+    "vitest": "^3.0.0"
+  }
+}
