@@ -35,7 +35,7 @@
     "@fastify/rate-limit": "^11.2.0",
     "bullmq": "^6.0.0",
     "fastify": "^5.0.0",
-    "ioredis": "^5.11.1",
+    "ioredis": "^6.0.0",
     "minimatch": "^10.2.6",
     "octokit": "^5.0.0",
     "postgres": "^3.4.0",
