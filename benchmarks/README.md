@@ -14,8 +14,8 @@ Run:
 npm run benchmark -- benchmarks/your-history.jsonl
 ```
 
-To collect 100 local candidates from the permissively licensed repositories in
-`sources.json`, provide a read-only GitHub token and run:
+To collect 100 local candidates from the collector's audited, permissively
+licensed repository allowlist, provide a read-only GitHub token and run:
 
 ```bash
 npm run benchmark:collect -- --target=100

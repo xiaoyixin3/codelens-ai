@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { ReplayCaseSchema, type ReplayCase } from '@codelens/evaluation';
 import { redactSecrets } from '@codelens/security';
@@ -38,13 +38,18 @@ const outputPath = path.resolve(
   args.find((arg) => arg.startsWith('--output='))?.split('=')[1]
     ?? 'benchmarks/candidates/public-prs.jsonl'
 );
-const sourcePath = path.resolve(root, 'benchmarks/sources.json');
 const token = process.env.GITHUB_TOKEN?.trim();
 
 if (!token) throw new Error('GITHUB_TOKEN is required to collect benchmark candidates.');
 if (!Number.isInteger(target) || target <= 0) throw new Error('--target must be a positive integer.');
 
-const sources = JSON.parse(await readFile(sourcePath, 'utf8')) as Source[];
+const sources: Source[] = [
+  { owner: 'fastify', repo: 'fastify', license: 'MIT', quota: 20 },
+  { owner: 'vitest-dev', repo: 'vitest', license: 'MIT', quota: 20 },
+  { owner: 'axios', repo: 'axios', license: 'MIT', quota: 20 },
+  { owner: 'sindresorhus', repo: 'p-limit', license: 'MIT', quota: 20 },
+  { owner: 'microsoft', repo: 'TypeScript', license: 'Apache-2.0', quota: 20 }
+];
 const allowedLicenses = new Set(['MIT', 'Apache-2.0', 'BSD-2-Clause', 'BSD-3-Clause', 'ISC']);
 const sourceQuota = new Map(
   sources.map((source) => [`${source.owner}/${source.repo}`, Math.min(source.quota, target)])

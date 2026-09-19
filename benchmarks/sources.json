@@ -1,7 +1,0 @@
-[
-  { "owner": "fastify", "repo": "fastify", "license": "MIT", "quota": 20 },
-  { "owner": "vitest-dev", "repo": "vitest", "license": "MIT", "quota": 20 },
-  { "owner": "axios", "repo": "axios", "license": "MIT", "quota": 20 },
-  { "owner": "sindresorhus", "repo": "p-limit", "license": "MIT", "quota": 20 },
-  { "owner": "microsoft", "repo": "TypeScript", "license": "Apache-2.0", "quota": 20 }
-]

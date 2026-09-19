@@ -55,7 +55,13 @@ for (const absolute of files) {
     continue;
   }
 
-  const buffer = await readFile(absolute);
+  let buffer: Buffer;
+  try {
+    buffer = await readFile(absolute);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+    throw error;
+  }
   if (buffer.includes(0)) continue;
   const source = buffer.toString('utf8');
   for (const { kind, pattern } of secretPatterns) {
