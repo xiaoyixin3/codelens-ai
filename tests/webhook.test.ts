@@ -61,6 +61,33 @@ describe('GitHub webhook API', () => {
     expect(store.runs.size).toBe(0);
   });
 
+  it('rate limits webhook bursts before they can create unbounded work', async () => {
+    const store = new InMemoryReviewStore();
+    const queue = new InMemoryReviewQueue();
+    const app = buildApi({ store, queue, webhookSecret: secret, webhookRateLimitMax: 1 });
+    openApps.push(app);
+    const body = JSON.stringify(createPayload());
+    const headers = {
+      'content-type': 'application/json',
+      'x-github-event': 'pull_request',
+      'x-hub-signature-256': signWebhook(body, secret)
+    };
+
+    const first = await app.inject({
+      method: 'POST', url: '/webhooks/github',
+      headers: { ...headers, 'x-github-delivery': 'delivery-rate-1' }, payload: body
+    });
+    const limited = await app.inject({
+      method: 'POST', url: '/webhooks/github',
+      headers: { ...headers, 'x-github-delivery': 'delivery-rate-2' }, payload: body
+    });
+
+    expect(first.statusCode).toBe(202);
+    expect(limited.statusCode).toBe(429);
+    expect(queue.jobs).toHaveLength(1);
+    expect(store.runs.size).toBe(1);
+  });
+
   it('queues a review exactly once for a valid delivery', async () => {
     const store = new InMemoryReviewStore();
     const queue = new InMemoryReviewQueue();

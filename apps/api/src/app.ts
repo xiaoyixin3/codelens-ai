@@ -1,4 +1,5 @@
 import Fastify, { type FastifyInstance } from 'fastify';
+import rateLimit from '@fastify/rate-limit';
 import {
   DEFAULT_CONFIG_HASH,
   REVIEW_PIPELINE_VERSION,
@@ -22,6 +23,7 @@ export interface ApiDependencies {
   store: ReviewStore;
   queue: ReviewQueue;
   webhookSecret: string;
+  webhookRateLimitMax?: number;
   githubAppId?: string;
   logger?: boolean | { level: string };
 }
@@ -116,7 +118,16 @@ export function buildApi(dependencies: ApiDependencies): FastifyInstance {
     }
   });
 
-  app.post('/webhooks/github', async (request, reply) => {
+  void app.register(async (webhookApi) => {
+    await webhookApi.register(rateLimit, { global: false });
+    webhookApi.post('/webhooks/github', {
+    config: {
+      rateLimit: {
+        max: dependencies.webhookRateLimitMax ?? 300,
+        timeWindow: '1 minute'
+      }
+    }
+  }, async (request, reply) => {
     const rawBody = request.rawBody ?? Buffer.alloc(0);
     const signature = request.headers['x-hub-signature-256'];
     const deliveryId = request.headers['x-github-delivery'];
@@ -240,6 +251,7 @@ export function buildApi(dependencies: ApiDependencies): FastifyInstance {
       await dependencies.store.markDeliveryProcessed(deliveryId, detail.slice(0, 2_000));
       throw error;
     }
+    });
   });
 
   app.addHook('onClose', async () => {

@@ -4,6 +4,7 @@
 
 - `/healthz` confirms the API process is alive.
 - `/readyz` verifies PostgreSQL and Redis dependencies.
+- The GitHub webhook route is limited to `WEBHOOK_RATE_LIMIT_MAX` requests per source IP per minute (default 300).
 - BullMQ retries review jobs three times. Review and publication IDs remain stable across retries.
 - A push during analysis makes the old run stale and suppresses its PR comment.
 

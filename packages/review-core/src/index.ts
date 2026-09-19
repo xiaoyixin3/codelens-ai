@@ -79,7 +79,9 @@ export interface SummaryBudget {
 }
 
 const HIGH_RISK_PATTERN = /(^|\/)(auth|payment|billing|security|migration|database|permission)(\/|\.|$)/i;
-const TEST_PATTERN = /(^|\/)(__tests__|test|tests|spec)(\/|\.)|\.(test|spec)\.[jt]sx?$/i;
+const TEST_DIRECTORY = /(?:^|\/)(?:__tests__|test|tests|spec)(?:\/|\.|$)/i;
+const TEST_FILENAME = /(?:^|\/)[^/]*\.(?:test|spec)\.[jt]sx?$/i;
+const isTestPath = (value: string) => TEST_DIRECTORY.test(value) || TEST_FILENAME.test(value);
 
 function describeFile(file: ChangedFile): string {
   return `${file.status}; +${file.additions}/-${file.deletions}`;
@@ -93,7 +95,7 @@ export class DeterministicSummaryGenerator implements SummaryGenerator {
     const additions = selected.reduce((sum, file) => sum + file.additions, 0);
     const deletions = selected.reduce((sum, file) => sum + file.deletions, 0);
     const highRiskFiles = selected.filter((file) => HIGH_RISK_PATTERN.test(file.path));
-    const hasTests = selected.some((file) => TEST_PATTERN.test(file.path));
+    const hasTests = selected.some((file) => isTestPath(file.path));
     const largeChange = additions + deletions > 1_000;
     const truncated = selected.length < context.files.length;
 

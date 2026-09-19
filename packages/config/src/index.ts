@@ -11,6 +11,7 @@ const EnvSchema = z.object({
   GITHUB_APP_ID: optionalString,
   GITHUB_PRIVATE_KEY: optionalString,
   GITHUB_WEBHOOK_SECRET: z.string().min(16),
+  WEBHOOK_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(300),
   LLM_BASE_URL: z.string().url().optional(),
   LLM_API_KEY: optionalString,
   LLM_MODEL: optionalString,

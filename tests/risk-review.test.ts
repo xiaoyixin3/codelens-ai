@@ -82,6 +82,22 @@ describe('DeterministicRiskReviewer', () => {
       ])
     );
   });
+
+  it('does not report credential-shaped test fixtures as production secrets', async () => {
+    const testContext: PullRequestContext = {
+      ...context,
+      files: [{
+        path: 'src/__tests__/credentials.test.ts',
+        status: 'added', additions: 1, deletions: 0,
+        patch: '@@ -0,0 +1 @@\n+const password = "fixture-password";'
+      }]
+    };
+    const candidates = await new DeterministicRiskReviewer().review(
+      testContext,
+      new DiffMap(testContext.files)
+    );
+    expect(candidates.some((item) => item.ruleId === 'security/no-hardcoded-secret')).toBe(false);
+  });
 });
 
 describe('EvidenceVerifier', () => {

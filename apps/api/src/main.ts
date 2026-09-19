@@ -8,6 +8,7 @@ const app = buildApi({
   store: new PostgresReviewStore(config.DATABASE_URL),
   queue: new BullReviewQueue(config.REDIS_URL),
   webhookSecret: config.GITHUB_WEBHOOK_SECRET,
+  webhookRateLimitMax: config.WEBHOOK_RATE_LIMIT_MAX,
   ...(config.GITHUB_APP_ID ? { githubAppId: config.GITHUB_APP_ID } : {}),
   logger: { level: config.LOG_LEVEL }
 });

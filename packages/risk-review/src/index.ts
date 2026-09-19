@@ -120,7 +120,9 @@ const RULES: Rule[] = [
   }
 ];
 
-const TEST_PATH = /(^|\/)(__tests__|test|tests|spec)(\/|\.)|\.(test|spec)\.[jt]sx?$/i;
+const TEST_DIRECTORY = /(?:^|\/)(?:__tests__|test|tests|spec)(?:\/|\.|$)/i;
+const TEST_FILENAME = /(?:^|\/)[^/]*\.(?:test|spec)\.[jt]sx?$/i;
+const isTestPath = (value: string) => TEST_DIRECTORY.test(value) || TEST_FILENAME.test(value);
 const SECRET = /\b(password|passwd|api[_-]?key|secret|access[_-]?token)\b\s*[:=]\s*['"]([^'"]{8,})['"]/i;
 const SQL_INTERPOLATION = /\b(query|execute|raw)\s*\(\s*`[^`]*\$\{/i;
 const REMOTE_CALL = /\b(fetch|axios\.(?:get|post|put|patch|delete)|http\.(?:get|request))\s*\(/i;
@@ -139,7 +141,7 @@ export class DeterministicRiskReviewer implements RiskReviewer {
     const findings: FindingCandidate[] = [];
     for (const line of diff.addedLines()) {
       for (const rule of RULES) if (rule.pattern.test(line.content)) findings.push(candidate(rule, line));
-      if (!TEST_PATH.test(line.path) && SECRET.test(line.content)) {
+      if (!isTestPath(line.path) && SECRET.test(line.content)) {
         findings.push(candidate({
           id: 'security/no-hardcoded-secret', pattern: SECRET, category: 'security', severity: 'critical', confidence: 0.93,
           title: 'Possible hardcoded secret', claim: 'This added line appears to embed a credential in source code.',
