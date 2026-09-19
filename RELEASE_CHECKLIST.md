@@ -8,8 +8,8 @@
 - [x] Production image builds and starts as a non-root user
 - [x] `/healthz` and `/readyz` pass
 - [x] `npm run smoke:pipeline` passes against PostgreSQL and Redis
-- [ ] GitHub Actions CI passes on the release commit
-- [ ] CodeQL reports no unresolved high-severity finding on the release commit
+- [x] GitHub Actions CI passes on the release commit
+- [x] CodeQL reports no unresolved high-severity finding on the release commit
 
 Automated gates last verified on 2026-09-19 with PostgreSQL 17, Redis 8.10.1, and the `codelens-ai:1.0.0-beta.1` image.
 
