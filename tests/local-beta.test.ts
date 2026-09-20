@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   buildWebhookUrl,
   extractQuickTunnelUrl,
-  normalizePublicBaseUrl
+  normalizePublicBaseUrl,
+  withoutProxyEnvironment
 } from '../scripts/local-beta.js';
 
 describe('local beta supervisor', () => {
@@ -24,5 +25,14 @@ describe('local beta supervisor', () => {
       .toThrow('must use HTTPS');
     expect(() => normalizePublicBaseUrl('https://reviews.example.com/admin'))
       .toThrow('without credentials, path, query, or fragment');
+  });
+
+  it('removes proxy variables from the ngrok child environment', () => {
+    expect(withoutProxyEnvironment({
+      HTTP_PROXY: 'socks5h://127.0.0.1:7897',
+      HTTPS_PROXY: 'socks5h://127.0.0.1:7897',
+      ALL_PROXY: 'socks5h://127.0.0.1:7897',
+      KEEP_ME: 'yes'
+    })).toEqual({ KEEP_ME: 'yes' });
   });
 });

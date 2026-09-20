@@ -11,11 +11,13 @@
 - [x] GitHub Actions CI passes on the release commit
 - [x] CodeQL reports no unresolved high-severity finding on the release commit
 
-Automated gates last verified on 2026-09-19 with PostgreSQL 17, Redis 8.10.1, and the `codelens-ai:1.0.0-beta.1` image.
+Automated gates last verified on 2026-09-20 with PostgreSQL 17, Redis 8.10.1, 57 passing tests, and the `codelens-ai:1.0.0-beta.1` image.
 
 ## Manual gates
 
-- [ ] Fixed HTTPS deployment endpoint configured and recovery verified
+- [x] Fixed HTTPS deployment endpoint configured and recovery verified
+  - Evidence: [`docs/fixed-endpoint-validation-2026-09-20.md`](docs/fixed-endpoint-validation-2026-09-20.md)
+  - The current public-beta endpoint depends on the host PC, Docker Desktop, and local supervisor remaining online; use a managed deployment before broader production rollout.
 - [x] GitHub App permissions and webhook events verified in a test organization
   - Evidence: [`docs/organization-validation-2026-09-19.md`](docs/organization-validation-2026-09-19.md)
 - [ ] At least 100 approved historical PRs labelled and replayed
@@ -23,6 +25,7 @@ Automated gates last verified on 2026-09-19 with PostgreSQL 17, Redis 8.10.1, an
   - Candidate intake evidence: [`docs/benchmark-candidate-collection-2026-09-19.md`](docs/benchmark-candidate-collection-2026-09-19.md). Candidates do not satisfy this gate until they are labelled and approved.
 - [ ] Five to ten design-partner repositories approved for staged rollout
 - [ ] `npm run beta:readiness` reports at least 20 eligible reviews and a seven-day success rate of at least 95%
+  - Current observation on 2026-09-20: 6/20 eligible reviews, 6 completed, 0 failed, 100% success rate.
 - [x] Retention, deletion, backup, and restore drills completed
   - Evidence: [`docs/operations-drill-2026-09-19.md`](docs/operations-drill-2026-09-19.md)
 - [ ] Model-provider account budget and alerting configured

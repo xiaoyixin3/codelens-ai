@@ -45,5 +45,6 @@ GitHub App webhook. A follow-up commit on the same pull request produced a new
 - Result: completed, `neutral`, one verified annotation at `src/jobs.ts:2`
 
 This verifies controlled URL rotation and review recovery for the local beta.
-It does not satisfy the separate fixed-HTTPS release gate; a stable Named
-Tunnel or managed deployment is still required.
+The separate fixed-HTTPS gate was subsequently satisfied with an ngrok assigned
+development domain and a same-hostname restart regression on 2026-09-20. See
+[`fixed-endpoint-validation-2026-09-20.md`](fixed-endpoint-validation-2026-09-20.md).

@@ -61,16 +61,50 @@ function resolveCloudflared(): string {
   throw new Error('cloudflared was not found. Install it or set CLOUDFLARED_BIN.');
 }
 
+function resolveNgrok(): string {
+  const localAppData = process.env.LOCALAPPDATA?.trim();
+  const candidates = [
+    process.env.NGROK_BIN?.trim(),
+    'ngrok',
+    localAppData
+      ? path.join(localAppData, 'Microsoft', 'WinGet', 'Links', 'ngrok.exe')
+      : undefined,
+    localAppData
+      ? path.join(
+          localAppData,
+          'Microsoft',
+          'WinGet',
+          'Packages',
+          'Ngrok.Ngrok_Microsoft.Winget.Source_8wekyb3d8bbwe',
+          'ngrok.exe'
+        )
+      : undefined
+  ].filter((candidate): candidate is string => Boolean(candidate));
+
+  for (const candidate of candidates) {
+    if (path.isAbsolute(candidate) && !existsSync(candidate)) continue;
+    const probe = spawnSync(candidate, ['version'], { stdio: 'ignore' });
+    if (!probe.error && probe.status === 0) return candidate;
+  }
+  throw new Error('ngrok was not found. Install it or set NGROK_BIN.');
+}
+
+export function withoutProxyEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const sanitized = { ...environment };
+  for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY']) delete sanitized[key];
+  return sanitized;
+}
+
 function startChild(
   name: string,
   command: string,
   args: string[],
   pipeOutput = false,
-  extraEnvironment: Record<string, string> = {}
+  environment: NodeJS.ProcessEnv = process.env
 ): ChildProcess {
   const child = spawn(command, args, {
     cwd: root,
-    env: { ...process.env, ...extraEnvironment },
+    env: environment,
     stdio: pipeOutput ? ['ignore', 'pipe', 'pipe'] : ['ignore', 'inherit', 'inherit']
   });
   children.set(child, name);
@@ -154,29 +188,52 @@ async function main(): Promise<void> {
   await waitForReady(localReadyUrl);
   startChild('worker', process.execPath, ['--import', 'tsx', 'apps/worker/src/main.ts']);
 
+  const tunnelProvider = process.env.CODELENS_TUNNEL_PROVIDER?.trim().toLowerCase() || 'cloudflare';
+  if (!['cloudflare', 'ngrok'].includes(tunnelProvider)) {
+    throw new Error('CODELENS_TUNNEL_PROVIDER must be cloudflare or ngrok.');
+  }
+
   const configuredPublicBaseUrl = process.env.CODELENS_PUBLIC_BASE_URL?.trim();
   const configuredTunnelToken = process.env.CLOUDFLARE_TUNNEL_TOKEN?.trim();
-  if (Boolean(configuredPublicBaseUrl) !== Boolean(configuredTunnelToken)) {
+  if (tunnelProvider === 'cloudflare' && Boolean(configuredPublicBaseUrl) !== Boolean(configuredTunnelToken)) {
     throw new Error(
       'CODELENS_PUBLIC_BASE_URL and CLOUDFLARE_TUNNEL_TOKEN must be configured together.'
     );
   }
+  if (tunnelProvider === 'ngrok' && !configuredPublicBaseUrl) {
+    throw new Error('CODELENS_PUBLIC_BASE_URL is required when CODELENS_TUNNEL_PROVIDER=ngrok.');
+  }
+  if (tunnelProvider === 'ngrok' && configuredTunnelToken) {
+    throw new Error('CLOUDFLARE_TUNNEL_TOKEN cannot be used with CODELENS_TUNNEL_PROVIDER=ngrok.');
+  }
 
-  const cloudflared = resolveCloudflared();
   let tunnelUrl: string;
-  let mode: 'local-beta-fixed' | 'local-beta-quick';
-  if (configuredPublicBaseUrl && configuredTunnelToken) {
+  let mode: 'local-beta-fixed-cloudflare' | 'local-beta-fixed-ngrok' | 'local-beta-quick';
+  if (tunnelProvider === 'ngrok') {
+    tunnelUrl = normalizePublicBaseUrl(configuredPublicBaseUrl!);
+    mode = 'local-beta-fixed-ngrok';
+    const ngrok = resolveNgrok();
+    startChild(
+      'ngrok Fixed Tunnel',
+      ngrok,
+      ['http', String(config.PORT), `--url=${tunnelUrl}`, '--log', 'stdout'],
+      true,
+      withoutProxyEnvironment(process.env)
+    );
+  } else if (configuredPublicBaseUrl && configuredTunnelToken) {
     tunnelUrl = normalizePublicBaseUrl(configuredPublicBaseUrl);
-    mode = 'local-beta-fixed';
+    mode = 'local-beta-fixed-cloudflare';
+    const cloudflared = resolveCloudflared();
     startChild(
       'Cloudflare Named Tunnel',
       cloudflared,
       ['tunnel', '--no-autoupdate', '--protocol', 'http2', 'run'],
       true,
-      { TUNNEL_TOKEN: configuredTunnelToken }
+      { ...process.env, TUNNEL_TOKEN: configuredTunnelToken }
     );
   } else {
     mode = 'local-beta-quick';
+    const cloudflared = resolveCloudflared();
     const tunnel = startChild(
       'Cloudflare Quick Tunnel',
       cloudflared,
