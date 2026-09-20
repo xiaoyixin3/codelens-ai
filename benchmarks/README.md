@@ -26,6 +26,30 @@ Review each source PR and its diff, label `expectedFindings`, then set
 `approval.status="approved"`, `approvedBy`, and `approvedAt`. Only copy reviewed
 cases into `approved-replay.jsonl`.
 
+The general collector may produce an all-negative sample because verified risk
+patterns are rare in recent pull requests. Build a stratified review queue with
+at least 20 machine-suggested positive candidates and 80 negative candidates:
+
+```bash
+npm run benchmark:collect-positive -- --target-positive=20 --target-total=100
+```
+
+This collector traces current risk-pattern lines back to the merged pull
+requests that introduced them, validates each repository license, and preserves
+the result under the ignored `benchmarks/candidates/` directory. Its suggestions
+are discovery aids only; every case still requires human review and approval.
+
+Start the local-only review workbench after collecting the queue:
+
+```bash
+npm run benchmark:label
+```
+
+Open `http://127.0.0.1:4310`. The workbench stores atomic draft decisions in
+`benchmarks/candidates/review-decisions.json` and only exports
+`benchmarks/candidates/approved-replay.jsonl` after all 100 cases have an
+explicit human approval. Both files stay ignored by Git.
+
 The release gate defaults also require at least 20 positive cases (one or more
 confirmed findings) and 20 negative cases (no confirmed findings). Override the
 counts only through the documented `BENCHMARK_MIN_POSITIVE_CASES` and

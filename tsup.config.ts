@@ -6,6 +6,8 @@ export default defineConfig({
     worker: 'apps/worker/src/main.ts',
     migrate: 'scripts/migrate.ts',
     'beta-readiness': 'scripts/beta-readiness.ts',
+    'collect-positive-benchmark': 'scripts/collect-positive-benchmark.ts',
+    'benchmark-labeler': 'scripts/benchmark-labeler.ts',
     'local-beta': 'scripts/local-beta.ts',
     'github-preflight': 'scripts/github-preflight.ts',
     'smoke-pipeline': 'scripts/smoke-pipeline.ts',

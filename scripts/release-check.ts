@@ -22,6 +22,8 @@ const required = [
   'dist/worker.js',
   'dist/migrate.js',
   'dist/beta-readiness.js',
+  'dist/collect-positive-benchmark.js',
+  'dist/benchmark-labeler.js',
   'dist/local-beta.js',
   'dist/github-preflight.js',
   'dist/smoke-pipeline.js',

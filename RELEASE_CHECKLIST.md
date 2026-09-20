@@ -22,7 +22,8 @@ Automated gates last verified on 2026-09-20 with PostgreSQL 17, Redis 8.10.1, 57
   - Evidence: [`docs/organization-validation-2026-09-19.md`](docs/organization-validation-2026-09-19.md)
 - [ ] At least 100 approved historical PRs labelled and replayed
   - Run `npm run benchmark:gate -- benchmarks/approved-replay.jsonl`; defaults require 100 cases, at least 20 positive and 20 negative cases, precision ≥ 0.80, recall ≥ 0.70, and p95 evaluation latency ≤ 1,000 ms.
-  - Candidate intake evidence: [`docs/benchmark-candidate-collection-2026-09-19.md`](docs/benchmark-candidate-collection-2026-09-19.md). Candidates do not satisfy this gate until they are labelled and approved.
+  - Candidate intake evidence: [`docs/benchmark-candidate-collection-2026-09-19.md`](docs/benchmark-candidate-collection-2026-09-19.md). A 20-positive/80-negative review queue and local human labelling workbench are ready; current approval remains 0/100.
+  - Workbench evidence: [`docs/benchmark-labeling-workbench-2026-09-20.md`](docs/benchmark-labeling-workbench-2026-09-20.md). Candidates do not satisfy this gate until they are individually reviewed and approved.
 - [ ] Five to ten design-partner repositories approved for staged rollout
 - [ ] `npm run beta:readiness` reports at least 20 eligible reviews and a seven-day success rate of at least 95%
   - Current observation on 2026-09-20: 6/20 eligible reviews, 6 completed, 0 failed, 100% success rate.

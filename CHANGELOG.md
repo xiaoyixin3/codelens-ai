@@ -14,6 +14,7 @@ All notable changes to CodeLens AI are documented in this file. The project foll
 - GitHub Check Run annotations, summary comments, manual reruns, and signed reviewer feedback commands.
 - Production container and Compose definitions, ordered migrations, health/readiness probes, and non-root runtime.
 - GitHub App preflight, full-pipeline smoke testing, historical PR quality gates, and seven-day beta-readiness reporting.
+- Stratified historical-PR candidate collection and a loopback-only human benchmark labelling workbench.
 - SHA-pinned CI, PostgreSQL/Redis integration testing, production image validation, CodeQL, and Dependabot configuration.
 
 ### Known limitations

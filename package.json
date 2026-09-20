@@ -24,6 +24,8 @@
     "benchmark": "node --env-file-if-exists=.env --import tsx scripts/benchmark.ts",
     "benchmark:gate": "node --env-file-if-exists=.env --import tsx scripts/benchmark.ts --gate",
     "benchmark:collect": "node --env-file-if-exists=.env --import tsx scripts/collect-benchmark.ts",
+    "benchmark:collect-positive": "node --env-file-if-exists=.env --import tsx scripts/collect-positive-benchmark.ts",
+    "benchmark:label": "node --env-file-if-exists=.env --import tsx scripts/benchmark-labeler.ts",
     "beta:readiness": "node --env-file-if-exists=.env --import tsx scripts/beta-readiness.ts",
     "beta:local": "node --env-file-if-exists=.env --import tsx scripts/local-beta.ts",
     "smoke:pipeline": "node --env-file-if-exists=.env --import tsx scripts/smoke-pipeline.ts",

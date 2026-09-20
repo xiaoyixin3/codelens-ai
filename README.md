@@ -186,6 +186,8 @@ npm run typecheck
 npm test
 npm run build
 npm run benchmark
+npm run benchmark:collect-positive -- --target-positive=20 --target-total=100
+npm run benchmark:label
 npm run benchmark:gate -- benchmarks/approved-replay.jsonl
 npm run beta:readiness
 npm run github:preflight
@@ -203,6 +205,7 @@ npm run dev:worker
 ```text
 apps/
   api/                  webhook and health API
+  benchmark-labeler/    local-only human benchmark review workbench
   worker/               asynchronous review worker
 packages/
   code-index/            TS/JS symbols, edges, and PR delta snapshots

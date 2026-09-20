@@ -12,3 +12,5 @@ dist/
 .codelens-workspaces/
 *.log
 benchmarks/candidates/
+.playwright-cli/
+output/playwright/
