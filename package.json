@@ -12,11 +12,14 @@
     "node": ">=24"
   },
   "scripts": {
-    "dev:api": "tsx watch apps/api/src/main.ts",
-    "dev:worker": "tsx watch apps/worker/src/main.ts",
-    "start:api": "tsx apps/api/src/main.ts",
-    "start:worker": "tsx apps/worker/src/main.ts",
-    "build": "tsup",
+    "dev:api": "go run ./cmd/api",
+    "dev:worker": "go run ./cmd/worker",
+    "start:api": "go run ./cmd/api",
+    "start:worker": "go run ./cmd/worker",
+    "legacy:api": "tsx apps/api/src/main.ts",
+    "legacy:worker": "tsx apps/worker/src/main.ts",
+    "build": "go build ./cmd/...",
+    "build:legacy": "tsup",
     "typecheck": "tsc --noEmit",
     "security:scan": "node --import tsx scripts/scan-secrets.ts",
     "test": "vitest run",
@@ -30,10 +33,10 @@
     "beta:local": "node --env-file-if-exists=.env --import tsx scripts/local-beta.ts",
     "smoke:pipeline": "node --env-file-if-exists=.env --import tsx scripts/smoke-pipeline.ts",
     "github:preflight": "node --env-file-if-exists=.env --import tsx scripts/github-preflight.ts",
-    "db:migrate": "tsx scripts/migrate.ts",
+    "db:migrate": "go run ./cmd/migrate",
     "data:retain": "tsx scripts/retention.ts",
     "data:delete": "tsx scripts/delete-repository-data.ts",
-    "release:check": "npm run security:scan && npm run typecheck && npm test && npm run build && tsx scripts/release-check.ts"
+    "release:check": "npm run security:scan && go test ./... && npm run typecheck && npm test && npm run build && npm run build:legacy && tsx scripts/release-check.ts"
   },
   "dependencies": {
     "@fastify/rate-limit": "^11.2.0",

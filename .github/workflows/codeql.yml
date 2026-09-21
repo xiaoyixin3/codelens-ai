@@ -18,9 +18,13 @@ concurrency:
 
 jobs:
   analyze:
-    name: JavaScript and TypeScript analysis
+    name: ${{ matrix.language }} analysis
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [go, javascript-typescript]
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -30,10 +34,14 @@ jobs:
       - name: Initialize CodeQL
         uses: github/codeql-action/init@4bd7200e1f146b1c937cae12d258b50f41a53cf8 # v4.38.0
         with:
-          languages: javascript-typescript
+          languages: ${{ matrix.language }}
           queries: security-extended
+
+      - name: Autobuild compiled language
+        if: matrix.language == 'go'
+        uses: github/codeql-action/autobuild@4bd7200e1f146b1c937cae12d258b50f41a53cf8 # v4.38.0
 
       - name: Analyze
         uses: github/codeql-action/analyze@4bd7200e1f146b1c937cae12d258b50f41a53cf8 # v4.38.0
         with:
-          category: /language:javascript-typescript
+          category: /language:${{ matrix.language }}

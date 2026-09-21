@@ -14,18 +14,6 @@ services:
     volumes:
       - codelens-postgres:/var/lib/postgresql/data
 
-  redis:
-    image: redis:8-alpine
-    restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-    volumes:
-      - codelens-redis:/data
-
   migrate:
     build:
       context: ..
@@ -35,8 +23,7 @@ services:
         required: false
     environment:
       DATABASE_URL: postgres://codelens:${POSTGRES_PASSWORD}@postgres:5432/codelens
-      REDIS_URL: redis://redis:6379
-    command: ["node", "dist/migrate.js"]
+    command: ["/app/codelens-migrate"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -50,8 +37,7 @@ services:
         required: false
     environment:
       DATABASE_URL: postgres://codelens:${POSTGRES_PASSWORD}@postgres:5432/codelens
-      REDIS_URL: redis://redis:6379
-    command: ["node", "dist/api.js"]
+    command: ["/app/codelens-api"]
     ports:
       - "${PORT:-3000}:3000"
     healthcheck:
@@ -62,8 +48,6 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-      redis:
-        condition: service_healthy
 
   worker:
     image: codelens-ai:${CODELENS_IMAGE_TAG:-1.0.0-beta.1}
@@ -74,13 +58,10 @@ services:
         required: false
     environment:
       DATABASE_URL: postgres://codelens:${POSTGRES_PASSWORD}@postgres:5432/codelens
-      REDIS_URL: redis://redis:6379
-    command: ["node", "dist/worker.js"]
+    command: ["/app/codelens-worker"]
     depends_on:
       migrate:
         condition: service_completed_successfully
-      redis:
-        condition: service_healthy
 
   retention:
     image: codelens-ai:${CODELENS_IMAGE_TAG:-1.0.0-beta.1}
@@ -97,4 +78,3 @@ services:
 
 volumes:
   codelens-postgres:
-  codelens-redis:

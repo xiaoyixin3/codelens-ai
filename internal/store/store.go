@@ -1,0 +1,352 @@
+package store
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/xiaoyixin3/codelens-ai/internal/contracts"
+)
+
+type Store struct{ pool *pgxpool.Pool }
+
+type CreateReviewRunInput struct {
+	RepositoryID    int64
+	PullNumber      int
+	BaseSHA         string
+	HeadSHA         string
+	PipelineVersion string
+	ConfigHash      string
+	Trigger         string
+	RequestKey      string
+}
+
+type FindingFeedbackInput struct {
+	RepositoryID      int64
+	PullNumber        int
+	FingerprintPrefix string
+	Verdict           string
+	ActorLogin        string
+	SourceCommentID   int64
+}
+
+type Publication struct {
+	ReviewRunID      string
+	HeadSHA          string
+	CheckRunID       *int64
+	SummaryCommentID *int64
+}
+
+func Open(ctx context.Context, databaseURL string) (*Store, error) {
+	pool, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("open postgres: %w", err)
+	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("ping postgres: %w", err)
+	}
+	return &Store{pool: pool}, nil
+}
+
+func (s *Store) Close()                         { s.pool.Close() }
+func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
+
+func (s *Store) ClaimDelivery(ctx context.Context, deliveryID, event, action string, rawBody []byte) (bool, error) {
+	digest := sha256.Sum256(rawBody)
+	result, err := s.pool.Exec(ctx, `
+		INSERT INTO webhook_deliveries (delivery_id, event, action, payload_hash, signature_valid)
+		VALUES ($1, $2, NULLIF($3, ''), $4, true)
+		ON CONFLICT (delivery_id) DO NOTHING`, deliveryID, event, action, hex.EncodeToString(digest[:]))
+	if err != nil {
+		return false, err
+	}
+	return result.RowsAffected() == 1, nil
+}
+
+func (s *Store) MarkDeliveryProcessed(ctx context.Context, deliveryID, detail string) error {
+	status := "processed"
+	var errorDetail any
+	if detail != "" {
+		status = "failed"
+		errorDetail = detail
+	}
+	_, err := s.pool.Exec(ctx, `
+		UPDATE webhook_deliveries SET status=$2, error_detail=$3, processed_at=now()
+		WHERE delivery_id=$1`, deliveryID, status, errorDetail)
+	return err
+}
+
+func (s *Store) CreateOrGetReviewRun(ctx context.Context, input CreateReviewRunInput) (contracts.ReviewRun, bool, error) {
+	if input.Trigger == "" {
+		input.Trigger = "webhook"
+	}
+	if input.RequestKey == "" {
+		input.RequestKey = "automatic"
+	}
+	id := uuid.NewString()
+	row := s.pool.QueryRow(ctx, `
+		INSERT INTO review_runs (
+			id, github_repository_id, pull_number, base_sha, head_sha, status,
+			pipeline_version, config_hash, trigger, request_key
+		) VALUES ($1,$2,$3,$4,$5,'queued',$6,$7,$8,$9)
+		ON CONFLICT (github_repository_id, pull_number, head_sha, pipeline_version, request_key)
+		DO NOTHING RETURNING id, github_repository_id, pull_number, base_sha, head_sha,
+		status, pipeline_version, config_hash, trigger, request_key, COALESCE(summary, 'null'::jsonb)`,
+		id, input.RepositoryID, input.PullNumber, input.BaseSHA, input.HeadSHA,
+		input.PipelineVersion, input.ConfigHash, input.Trigger, input.RequestKey)
+	run, err := scanReviewRun(row)
+	if err == nil {
+		return run, true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return contracts.ReviewRun{}, false, err
+	}
+	row = s.pool.QueryRow(ctx, `
+		SELECT id, github_repository_id, pull_number, base_sha, head_sha,
+		status, pipeline_version, config_hash, trigger, request_key, COALESCE(summary, 'null'::jsonb)
+		FROM review_runs WHERE github_repository_id=$1 AND pull_number=$2 AND head_sha=$3
+		AND pipeline_version=$4 AND request_key=$5 LIMIT 1`,
+		input.RepositoryID, input.PullNumber, input.HeadSHA, input.PipelineVersion, input.RequestKey)
+	run, err = scanReviewRun(row)
+	return run, false, err
+}
+
+func (s *Store) CreateOrGetReviewRunAndEnqueue(ctx context.Context, input CreateReviewRunInput, job contracts.ReviewJob) (contracts.ReviewRun, bool, error) {
+	if input.Trigger == "" {
+		input.Trigger = "webhook"
+	}
+	if input.RequestKey == "" {
+		input.RequestKey = "automatic"
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return contracts.ReviewRun{}, false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	id := uuid.NewString()
+	run, err := scanReviewRun(tx.QueryRow(ctx, `
+		INSERT INTO review_runs (
+			id, github_repository_id, pull_number, base_sha, head_sha, status,
+			pipeline_version, config_hash, trigger, request_key
+		) VALUES ($1,$2,$3,$4,$5,'queued',$6,$7,$8,$9)
+		ON CONFLICT (github_repository_id, pull_number, head_sha, pipeline_version, request_key)
+		DO NOTHING RETURNING id, github_repository_id, pull_number, base_sha, head_sha,
+		status, pipeline_version, config_hash, trigger, request_key, COALESCE(summary, 'null'::jsonb)`,
+		id, input.RepositoryID, input.PullNumber, input.BaseSHA, input.HeadSHA,
+		input.PipelineVersion, input.ConfigHash, input.Trigger, input.RequestKey))
+	created := err == nil
+	if errors.Is(err, pgx.ErrNoRows) {
+		run, err = scanReviewRun(tx.QueryRow(ctx, `
+			SELECT id, github_repository_id, pull_number, base_sha, head_sha,
+			status, pipeline_version, config_hash, trigger, request_key, COALESCE(summary, 'null'::jsonb)
+			FROM review_runs WHERE github_repository_id=$1 AND pull_number=$2 AND head_sha=$3
+			AND pipeline_version=$4 AND request_key=$5 LIMIT 1`,
+			input.RepositoryID, input.PullNumber, input.HeadSHA, input.PipelineVersion, input.RequestKey))
+	}
+	if err != nil {
+		return contracts.ReviewRun{}, false, err
+	}
+	if created {
+		job.ReviewRunID = run.ID
+		if !job.Valid() {
+			return contracts.ReviewRun{}, false, errors.New("invalid review job")
+		}
+		payload, err := json.Marshal(job)
+		if err != nil {
+			return contracts.ReviewRun{}, false, err
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO review_jobs (id,review_run_id,payload) VALUES ($1,$2,$3)`, uuid.NewString(), run.ID, payload); err != nil {
+			return contracts.ReviewRun{}, false, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return contracts.ReviewRun{}, false, err
+	}
+	return run, created, nil
+}
+
+func scanReviewRun(row pgx.Row) (contracts.ReviewRun, error) {
+	var run contracts.ReviewRun
+	var summary []byte
+	err := row.Scan(&run.ID, &run.RepositoryID, &run.PullNumber, &run.BaseSHA, &run.HeadSHA,
+		&run.Status, &run.PipelineVersion, &run.ConfigHash, &run.Trigger, &run.RequestKey, &summary)
+	if err == nil && string(summary) != "null" {
+		run.Summary = summary
+	}
+	return run, err
+}
+
+func (s *Store) GetReviewRun(ctx context.Context, id string) (contracts.ReviewRun, error) {
+	return scanReviewRun(s.pool.QueryRow(ctx, `
+		SELECT id, github_repository_id, pull_number, base_sha, head_sha,
+		status, pipeline_version, config_hash, trigger, request_key, COALESCE(summary, 'null'::jsonb)
+		FROM review_runs WHERE id=$1`, id))
+}
+
+func (s *Store) UpdateReviewRun(ctx context.Context, id, status string, summary json.RawMessage, errorCode, errorDetail string) error {
+	var summaryValue any
+	if len(summary) > 0 {
+		summaryValue = summary
+	}
+	_, err := s.pool.Exec(ctx, `
+		UPDATE review_runs SET status=$2, summary=$3, error_code=NULLIF($4,''), error_detail=NULLIF($5,''),
+		started_at=CASE WHEN $2='in_progress' THEN COALESCE(started_at,now()) ELSE started_at END,
+		completed_at=CASE WHEN $2 IN ('completed','failed','stale','skipped') THEN now() ELSE completed_at END,
+		updated_at=now() WHERE id=$1`, id, status, summaryValue, errorCode, errorDetail)
+	return err
+}
+
+func (s *Store) SavePublication(ctx context.Context, publication Publication) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO publications (id,review_run_id,head_sha,check_run_id,summary_comment_id)
+		VALUES ($1,$2,$3,$4,$5)
+		ON CONFLICT (review_run_id) DO UPDATE SET head_sha=EXCLUDED.head_sha,
+		check_run_id=COALESCE(EXCLUDED.check_run_id,publications.check_run_id),
+		summary_comment_id=COALESCE(EXCLUDED.summary_comment_id,publications.summary_comment_id),updated_at=now()`,
+		uuid.NewString(), publication.ReviewRunID, publication.HeadSHA, publication.CheckRunID, publication.SummaryCommentID)
+	return err
+}
+
+func (s *Store) GetPublication(ctx context.Context, reviewRunID string) (Publication, error) {
+	var publication Publication
+	err := s.pool.QueryRow(ctx, `SELECT review_run_id,head_sha,check_run_id,summary_comment_id
+		FROM publications WHERE review_run_id=$1`, reviewRunID).Scan(
+		&publication.ReviewRunID, &publication.HeadSHA, &publication.CheckRunID, &publication.SummaryCommentID)
+	return publication, err
+}
+
+func (s *Store) SaveFindingFeedback(ctx context.Context, input FindingFeedbackInput) (bool, error) {
+	result, err := s.pool.Exec(ctx, `
+		WITH matched AS (
+			SELECT f.id FROM findings f JOIN review_runs r ON r.id=f.review_run_id
+			WHERE r.github_repository_id=$1 AND r.pull_number=$2 AND f.fingerprint LIKE $3 AND f.status='verified'
+			ORDER BY r.created_at DESC LIMIT 1
+		)
+		INSERT INTO finding_feedback (id,finding_id,verdict,actor_login,source_comment_id)
+		SELECT $4,matched.id,$5,$6,$7 FROM matched
+		ON CONFLICT (source_comment_id) DO NOTHING`, input.RepositoryID, input.PullNumber,
+		input.FingerprintPrefix+"%", uuid.NewString(), input.Verdict, input.ActorLogin, input.SourceCommentID)
+	return result.RowsAffected() == 1, err
+}
+
+func (s *Store) SaveFindings(ctx context.Context, reviewRunID string, findings []contracts.Finding) error {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	for _, finding := range findings {
+		findingID := uuid.NewString()
+		published := finding.Publishable && finding.Status == "verified"
+		err := tx.QueryRow(ctx, `
+			INSERT INTO findings (
+				id,review_run_id,fingerprint,source,rule_id,category,severity,confidence,
+				title,claim,suggestion,verification,status,rejection_reason,published
+			) VALUES ($1,$2,$3,$4,NULLIF($5,''),$6,$7,$8,$9,$10,$11,$12,$13,NULL,$14)
+			ON CONFLICT (review_run_id,fingerprint) DO UPDATE SET
+				confidence=EXCLUDED.confidence,status=EXCLUDED.status,published=EXCLUDED.published
+			RETURNING id`,
+			findingID, reviewRunID, finding.Fingerprint, finding.Source, finding.RuleID,
+			finding.Category, finding.Severity, finding.Confidence, finding.Title, finding.Claim,
+			finding.Suggestion, finding.Verification, finding.Status, published).Scan(&findingID)
+		if err != nil {
+			return err
+		}
+		if finding.Evidence != nil {
+			if _, err = tx.Exec(ctx, `DELETE FROM finding_evidence WHERE finding_id=$1`, findingID); err != nil {
+				return err
+			}
+			_, err = tx.Exec(ctx, `
+				INSERT INTO finding_evidence (id,finding_id,path,start_line,end_line,side,excerpt_hash,evidence_type)
+				VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING`,
+				uuid.NewString(), findingID, finding.Evidence.Path, finding.Evidence.StartLine,
+				finding.Evidence.EndLine, finding.Evidence.Side, finding.Evidence.ExcerptHash, finding.Evidence.EvidenceType)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *Store) Enqueue(ctx context.Context, job contracts.ReviewJob) error {
+	if !job.Valid() {
+		return errors.New("invalid review job")
+	}
+	payload, err := json.Marshal(job)
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO review_jobs (id,review_run_id,payload) VALUES ($1,$2,$3)
+		ON CONFLICT (review_run_id) DO NOTHING`, uuid.NewString(), job.ReviewRunID, payload)
+	return err
+}
+
+type ClaimedJob struct {
+	ID       string
+	Payload  contracts.ReviewJob
+	Attempts int
+}
+
+func (s *Store) ClaimJob(ctx context.Context) (ClaimedJob, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return ClaimedJob{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var claimed ClaimedJob
+	var payload []byte
+	err = tx.QueryRow(ctx, `
+		SELECT id,payload,attempts FROM review_jobs
+		WHERE status IN ('queued','retry') AND available_at<=now()
+		ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1`).Scan(&claimed.ID, &payload, &claimed.Attempts)
+	if err != nil {
+		return ClaimedJob{}, err
+	}
+	if err := json.Unmarshal(payload, &claimed.Payload); err != nil {
+		return ClaimedJob{}, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE review_jobs SET status='processing',locked_at=now(),updated_at=now() WHERE id=$1`, claimed.ID); err != nil {
+		return ClaimedJob{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return ClaimedJob{}, err
+	}
+	return claimed, nil
+}
+
+func (s *Store) CompleteJob(ctx context.Context, id string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE review_jobs SET status='completed',locked_at=NULL,updated_at=now() WHERE id=$1`, id)
+	return err
+}
+
+func (s *Store) RecoverStaleJobs(ctx context.Context) error {
+	_, err := s.pool.Exec(ctx, `UPDATE review_jobs SET status='retry',locked_at=NULL,available_at=now(),
+		last_error='worker lease expired',updated_at=now()
+		WHERE status='processing' AND locked_at < now()-interval '15 minutes'`)
+	return err
+}
+
+func (s *Store) RetryJob(ctx context.Context, id string, attempts int, detail string) (bool, error) {
+	nextAttempts := attempts + 1
+	terminal := nextAttempts >= 3
+	status := "retry"
+	delay := time.Duration(1<<attempts) * 2 * time.Second
+	if terminal {
+		status = "failed"
+		delay = 0
+	}
+	_, err := s.pool.Exec(ctx, `UPDATE review_jobs SET status=$2,attempts=$3,last_error=$4,
+		available_at=now()+$5::interval,locked_at=NULL,updated_at=now() WHERE id=$1`,
+		id, status, nextAttempts, detail, fmt.Sprintf("%f seconds", delay.Seconds()))
+	return terminal, err
+}

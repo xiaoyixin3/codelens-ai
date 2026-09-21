@@ -181,12 +181,12 @@ async function main(): Promise<void> {
       'Docker dependencies'
     );
   }
-  runChecked(process.execPath, ['--import', 'tsx', 'scripts/migrate.ts'], 'Database migration');
+  runChecked('go', ['run', './cmd/migrate'], 'Database migration');
 
-  const api = startChild('API', process.execPath, ['--import', 'tsx', 'apps/api/src/main.ts']);
+  const api = startChild('Go API', 'go', ['run', './cmd/api']);
   const localReadyUrl = `http://127.0.0.1:${config.PORT}/readyz`;
   await waitForReady(localReadyUrl);
-  startChild('worker', process.execPath, ['--import', 'tsx', 'apps/worker/src/main.ts']);
+  startChild('Go worker', 'go', ['run', './cmd/worker']);
 
   const tunnelProvider = process.env.CODELENS_TUNNEL_PROVIDER?.trim().toLowerCase() || 'cloudflare';
   if (!['cloudflare', 'ngrok'].includes(tunnelProvider)) {

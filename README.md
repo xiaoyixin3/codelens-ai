@@ -8,7 +8,8 @@ This repository contains the automated `v1.0.0-beta.1` release candidate through
 GitHub webhook
   → signature verification and delivery deduplication
   → idempotent review run
-  → BullMQ worker
+  → PostgreSQL durable job queue
+  → Go worker
   → PR diff retrieval
   → immutable repository policy from .codelens.yml + CODELENS.md
   → base/head changed-file AST snapshots
@@ -28,8 +29,8 @@ The current milestone intentionally does not execute repository code or create f
 - GitHub App webhook endpoint with exact-byte HMAC-SHA256 verification.
 - Delivery-level and review-run-level idempotency.
 - PostgreSQL run state, delivery audit, and publication records.
-- Redis/BullMQ queue with retries, exponential backoff, and job deduplication.
-- GitHub App installation authentication through Octokit.
+- PostgreSQL durable queue with leases, three attempts, exponential backoff, and run-level deduplication.
+- GitHub App installation authentication implemented in Go with short-lived installation tokens.
 - PR metadata and changed-file retrieval.
 - TypeScript/JavaScript AST indexing for files changed by the PR.
 - Stable symbols for files, classes, interfaces, types, enums, functions, methods, variables, and tests.
@@ -70,16 +71,28 @@ The current milestone intentionally does not execute repository code or create f
 
 ## Prerequisites
 
-- Node.js 24 LTS or newer supported Node LTS.
-- npm 11 or newer.
+- Go 1.27 or newer for the API, worker, and migration binaries.
+- Node.js 24 and npm 11 for benchmark, labeling, compatibility, and operations tooling.
 - PostgreSQL 17.
-- Redis 5 or newer. The included Compose file uses Redis 8.
 - A GitHub App for real repository integration.
+
+## Go migration status
+
+Go is the primary runtime language. The webhook API, configuration, HMAC security,
+PostgreSQL persistence, durable queue, GitHub App client, deterministic summary,
+risk rules, Check Run publication, and migration command live under `cmd/` and
+`internal/`.
+
+The TypeScript packages remain temporarily for the benchmark workbench, lifecycle
+operations, and the existing AST/impact/optional-LLM implementation while those
+advanced analyzers are ported behind the Go worker. `npm run legacy:worker` is the
+rollback path during parity validation; it is not the default worker.
 
 ## Local setup
 
 ```bash
 npm install
+go mod download
 docker compose -f infra/compose.yml up -d
 copy .env.example .env
 npm run db:migrate
@@ -131,7 +144,7 @@ Follow [INSTALLATION.md](INSTALLATION.md), then start the dependency-gated stack
 docker compose -f infra/compose.production.yml up -d --build
 ```
 
-The image runs compiled JavaScript as the non-root `node` user. Migration completion gates API and worker startup. Operational retention is available through the `operations` Compose profile; backup, deletion, and rollback procedures are documented in [OPERATIONS.md](OPERATIONS.md).
+The image runs compiled Go API, worker, and migration binaries as the non-root `node` user. It retains the compiled TypeScript operational tools during the migration window. Migration completion gates API and worker startup. Operational retention is available through the `operations` Compose profile; backup, deletion, and rollback procedures are documented in [OPERATIONS.md](OPERATIONS.md).
 
 For a local, single-machine beta with an automatically managed temporary HTTPS
 tunnel, use `npm run beta:local`. See [INSTALLATION.md](INSTALLATION.md) for the
@@ -203,10 +216,22 @@ npm run dev:worker
 ## Repository layout
 
 ```text
+cmd/
+  api/                  Go webhook and health API
+  worker/               Go asynchronous review worker
+  migrate/              Go ordered database migrator
+internal/
+  config/               Go environment and local dotenv loading
+  contracts/            Go webhook, review, summary, and finding types
+  githubapp/            Go GitHub App authentication and REST client
+  httpapi/              Go HTTP handlers, rate limiting, and validation
+  review/               Go deterministic summary and evidence-first review
+  security/             Go HMAC verification and redaction
+  store/                Go PostgreSQL state and durable job queue
 apps/
-  api/                  webhook and health API
+  api/                  legacy TypeScript API compatibility implementation
   benchmark-labeler/    local-only human benchmark review workbench
-  worker/               asynchronous review worker
+  worker/               legacy advanced-analysis worker
 packages/
   code-index/            TS/JS symbols, edges, and PR delta snapshots
   config/               environment validation
@@ -218,7 +243,7 @@ packages/
   lifecycle/            retention and repository deletion operations
   persistence/          PostgreSQL and in-memory stores
   project-policy/       repository configuration, guidance, path scoping
-  queue/                BullMQ and in-memory queues
+  queue/                legacy BullMQ and in-memory queues
   resilience/           bounded retry and rate-limit handling
   risk-review/          risk candidates, diff evidence, verification, audit persistence
   review-core/          summary generation and orchestration
