@@ -12,7 +12,7 @@ GitHub webhook
   → Go worker
   → PR diff retrieval
   → immutable repository policy from .codelens.yml + CODELENS.md
-  → base/head changed-file AST snapshots
+  → Go-native base/head changed-file symbol snapshots
   → symbol matching and bounded impact traversal
   → structured change summary
   → deterministic + optional LLM risk candidates
@@ -32,13 +32,13 @@ The current milestone intentionally does not execute repository code or create f
 - PostgreSQL durable queue with leases, three attempts, exponential backoff, and run-level deduplication.
 - GitHub App installation authentication implemented in Go with short-lived installation tokens.
 - PR metadata and changed-file retrieval.
-- TypeScript/JavaScript AST indexing for files changed by the PR.
-- Stable symbols for files, classes, interfaces, types, enums, functions, methods, variables, and tests.
-- `DECLARES`, `EXPORTS`, `IMPORTS`, and `CALLS` relationships with line-level evidence and confidence.
+- Go-native symbol indexing for changed Go, TypeScript, and JavaScript files.
+- Stable symbols for files, functions, Go types, classes, interfaces, aliases, and enums.
+- `CALLS` relationships with line-level evidence and confidence; unresolved dynamic calls remain explicit.
 - Commit-addressed delta snapshots with content hashes, parser versions, coverage, skip reasons, and safe reuse.
-- Base/head matching for `ADDED`, `MODIFIED`, `DELETED`, and `MOVED` symbols.
-- Internal linking of relative imports to exported symbols across changed files.
-- Reverse `CALLS`/`IMPORTS` traversal with a default maximum depth of two.
+- Base/head matching for `ADDED`, `MODIFIED`, and `DELETED` symbols.
+- Unique-name call linking across the changed-file snapshot, with confidence reduced for cross-file resolution.
+- Reverse `CALLS` traversal with a default maximum depth of two.
 - Explainable impact paths, edge confidence, coverage warnings, and deterministic blast-radius scoring.
 - Persisted impact analyses plus Top Impact Paths in the GitHub Check Run summary.
 - Deterministic local summarizer that works without an LLM key.
@@ -83,10 +83,11 @@ PostgreSQL persistence, durable queue, GitHub App client, deterministic summary,
 risk rules, Check Run publication, and migration command live under `cmd/` and
 `internal/`.
 
-The TypeScript packages remain temporarily for the benchmark workbench, lifecycle
-operations, and the existing AST/impact/optional-LLM implementation while those
-advanced analyzers are ported behind the Go worker. `npm run legacy:worker` is the
-rollback path during parity validation; it is not the default worker.
+Repository policy, changed-file symbol indexing, bounded impact traversal,
+OpenAI-compatible summary/risk generation, exact-line evidence verification, and
+LLM telemetry now run in Go. The TypeScript packages remain temporarily for the
+benchmark workbench, lifecycle operations, compatibility tests, and the explicit
+`npm run legacy:worker` rollback path; they are not part of the default worker.
 
 ## Local setup
 
@@ -225,13 +226,16 @@ internal/
   contracts/            Go webhook, review, summary, and finding types
   githubapp/            Go GitHub App authentication and REST client
   httpapi/              Go HTTP handlers, rate limiting, and validation
-  review/               Go deterministic summary and evidence-first review
+  intelligence/         Go/TS/JS symbols, snapshots, impact paths, blast radius
+  llm/                  Go provider fallback, budgets, redaction, telemetry
+  policy/               Go repository policy, guidance, and path scoping
+  review/               Go orchestration, summaries, evidence-first review
   security/             Go HMAC verification and redaction
   store/                Go PostgreSQL state and durable job queue
 apps/
   api/                  legacy TypeScript API compatibility implementation
   benchmark-labeler/    local-only human benchmark review workbench
-  worker/               legacy advanced-analysis worker
+  worker/               legacy rollback worker
 packages/
   code-index/            TS/JS symbols, edges, and PR delta snapshots
   config/               environment validation
@@ -273,7 +277,7 @@ repository + commit SHA + parser version + changed-file scope hash
 
 The scope hash prevents two PRs with the same base commit but different changed files from incorrectly sharing a partial graph. The current snapshot scope is `pull_request_delta`: base and head versions of the PR's changed files are fetched and indexed. A ready snapshot is reused on job retry. Every file is recorded as indexed, skipped, absent on that side, or failed.
 
-Impact analysis compares stable symbols across the base and head graphs. Exact stable keys identify ordinary modifications; unique kind/name/content matches identify file moves. The engine then walks incoming calls and imports to a bounded depth and publishes only paths supported by stored edges and source locations.
+Impact analysis compares stable symbols across the base and head graphs. Exact stable keys identify modifications, additions, and deletions. The engine then walks incoming calls to a bounded depth and publishes only paths supported by stored edges and source locations.
 
 Risk review treats both deterministic and model output as untrusted candidates. A candidate is publishable only when its path and right-side line resolve to an added line in the current unified diff, its optional excerpt matches, its confidence clears the severity threshold, and its fingerprint is unique. The full accepted/rejected audit is persisted, while only the highest-priority findings up to `MAX_INLINE_COMMENTS` become Check annotations.
 
@@ -287,7 +291,8 @@ The default lifecycle keeps terminal reviews and model telemetry for 90 days and
 
 - The index is a PR delta, so callers in unchanged files are not visible yet; every output carries this warning.
 - Calls resolved within the same file or through direct imports have stronger confidence; dynamic calls remain explicit `unresolved:` targets.
-- Tree-sitter and additional language adapters are deferred until the TypeScript/JavaScript path is validated.
+- The Go-native indexer deliberately uses a bounded declaration/call parser rather than a full compiler; methods, dynamic dispatch, and cross-file imports may remain unresolved.
+- Full compiler or Tree-sitter adapters and full-repository indexing remain post-beta improvements.
 - Token telemetry depends on the provider returning a compatible `usage` object; monetary cost is not calculated yet.
 - The production image and dependency-gated startup are exercised in CI; the current local beta endpoint still uses a temporary tunnel rather than a fixed production domain.
 - The beta tag remains gated on a 100-PR approved replay set, 5–10 design partners, and seven days at ≥95% success.

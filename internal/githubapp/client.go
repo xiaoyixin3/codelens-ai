@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -199,6 +201,47 @@ func (c *Client) doJSON(ctx context.Context, installationID int64, method, path 
 
 func repoPath(owner, repo string) string {
 	return "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo)
+}
+
+func repositoryFilePath(value string) (string, error) {
+	if strings.Contains(value, `\`) || strings.ContainsRune(value, '\x00') || regexp.MustCompile(`^[A-Za-z]:`).MatchString(value) {
+		return "", errors.New("unsafe repository path")
+	}
+	clean := strings.TrimPrefix(value, "./")
+	if clean == "" || strings.HasPrefix(clean, "/") || strings.Contains(clean, "../") || clean == ".." {
+		return "", errors.New("unsafe repository path")
+	}
+	parts := strings.Split(clean, "/")
+	for index := range parts {
+		parts[index] = url.PathEscape(parts[index])
+	}
+	return strings.Join(parts, "/"), nil
+}
+
+// GetFileContent reads an immutable repository file at the supplied commit SHA.
+// GitHub's Contents API returns base64 with optional line breaks.
+func (c *Client) GetFileContent(ctx context.Context, installationID int64, owner, repo, path, ref string) (string, error) {
+	escaped, err := repositoryFilePath(path)
+	if err != nil {
+		return "", err
+	}
+	var payload struct {
+		Type     string `json:"type"`
+		Encoding string `json:"encoding"`
+		Content  string `json:"content"`
+	}
+	endpoint := fmt.Sprintf("%s/contents/%s?ref=%s", repoPath(owner, repo), escaped, url.QueryEscape(ref))
+	if err := c.doJSON(ctx, installationID, http.MethodGet, endpoint, nil, &payload); err != nil {
+		return "", err
+	}
+	if payload.Type != "file" || payload.Encoding != "base64" {
+		return "", fmt.Errorf("GitHub contents response for %s is not a base64 file", path)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(payload.Content, "\n", ""))
+	if err != nil {
+		return "", fmt.Errorf("decode GitHub file %s: %w", path, err)
+	}
+	return string(decoded), nil
 }
 
 func (c *Client) GetPullRequest(ctx context.Context, installationID int64, owner, repo string, number int) (PullRequest, error) {

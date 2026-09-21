@@ -13,6 +13,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/xiaoyixin3/codelens-ai/internal/contracts"
+	"github.com/xiaoyixin3/codelens-ai/internal/intelligence"
+	"github.com/xiaoyixin3/codelens-ai/internal/llm"
+	"github.com/xiaoyixin3/codelens-ai/internal/policy"
 )
 
 type Store struct{ pool *pgxpool.Pool }
@@ -201,6 +204,176 @@ func (s *Store) UpdateReviewRun(ctx context.Context, id, status string, summary 
 		started_at=CASE WHEN $2='in_progress' THEN COALESCE(started_at,now()) ELSE started_at END,
 		completed_at=CASE WHEN $2 IN ('completed','failed','stale','skipped') THEN now() ELSE completed_at END,
 		updated_at=now() WHERE id=$1`, id, status, summaryValue, errorCode, errorDetail)
+	return err
+}
+
+func (s *Store) UpdateReviewRunConfig(ctx context.Context, id, configHash string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE review_runs SET config_hash=$2,updated_at=now() WHERE id=$1`, id, configHash)
+	return err
+}
+
+func (s *Store) SavePolicy(ctx context.Context, repositoryID int64, configured policy.Policy) error {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `DELETE FROM project_rules WHERE github_repository_id=$1 AND source_commit_sha=$2`, repositoryID, configured.SourceCommitSHA); err != nil {
+		return err
+	}
+	for _, rule := range configured.Rules {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO project_rules (
+				id,github_repository_id,source,rule_key,content,scope_glob,severity,
+				enabled,source_commit_sha,config_hash
+			) VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''),true,$8,$9)`,
+			uuid.NewString(), repositoryID, rule.Source, rule.Key, rule.Content, rule.Scope,
+			rule.Severity, configured.SourceCommitSHA, configured.Hash); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *Store) SaveIntelligence(ctx context.Context, reviewRunID string, result intelligence.Result) error {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	saveSnapshot := func(snapshot intelligence.Snapshot) (string, error) {
+		coverage, _ := json.Marshal(snapshot.Coverage)
+		actualID := snapshot.ID
+		err := tx.QueryRow(ctx, `
+			INSERT INTO code_snapshots (
+				id,github_repository_id,commit_sha,base_sha,parser_version,scope_hash,
+				status,scope,coverage,completed_at
+			) VALUES ($1,$2,$3,$4,$5,$6,'ready','pull_request_delta',$7,now())
+			ON CONFLICT (github_repository_id,commit_sha,parser_version,scope_hash)
+			DO UPDATE SET status='ready',coverage=EXCLUDED.coverage,error_detail=NULL,
+				completed_at=now(),updated_at=now()
+			RETURNING id`, snapshot.ID, snapshot.RepositoryID, snapshot.CommitSHA,
+			snapshot.BaseSHA, intelligence.ParserVersion, snapshot.ScopeHash, json.RawMessage(coverage)).Scan(&actualID)
+		if err != nil {
+			return "", err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM indexed_files WHERE snapshot_id=$1`, actualID); err != nil {
+			return "", err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM code_edges WHERE snapshot_id=$1`, actualID); err != nil {
+			return "", err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM code_symbols WHERE snapshot_id=$1`, actualID); err != nil {
+			return "", err
+		}
+		for _, file := range snapshot.Files {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO indexed_files (snapshot_id,path,language,content_hash,status,skip_reason,parse_errors)
+				VALUES ($1,$2,NULLIF($3,''),NULLIF($4,''),$5,NULLIF($6,''),$7)`,
+				actualID, file.Path, file.Language, file.ContentHash, file.Status, file.SkipReason, file.ParseErrors); err != nil {
+				return "", err
+			}
+		}
+		for _, symbol := range snapshot.Symbols {
+			metadata, _ := json.Marshal(symbol.Metadata)
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO code_symbols (
+					id,snapshot_id,stable_key,path,kind,name,qualified_name,start_line,end_line,
+					signature,content_hash,exported,metadata
+				) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+				uuid.NewString(), actualID, symbol.StableKey, symbol.Path, symbol.Kind, symbol.Name,
+				symbol.QualifiedName, symbol.StartLine, symbol.EndLine, symbol.Signature,
+				symbol.ContentHash, symbol.Exported, json.RawMessage(metadata)); err != nil {
+				return "", err
+			}
+		}
+		for _, edge := range snapshot.Edges {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO code_edges (
+					id,snapshot_id,from_stable_key,to_stable_key,type,confidence,source_path,source_line
+				) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+				uuid.NewString(), actualID, edge.FromStableKey, edge.ToStableKey, edge.Type,
+				edge.Confidence, edge.SourcePath, edge.SourceLine); err != nil {
+				return "", err
+			}
+		}
+		return actualID, nil
+	}
+
+	baseID, err := saveSnapshot(result.Base)
+	if err != nil {
+		return err
+	}
+	headID, err := saveSnapshot(result.Head)
+	if err != nil {
+		return err
+	}
+	coverage, _ := json.Marshal(map[string]any{
+		"scope": "pull_request_delta", "baseSymbols": len(result.Base.Symbols),
+		"headSymbols": len(result.Head.Symbols), "baseEdges": len(result.Base.Edges),
+		"headEdges": len(result.Head.Edges), "maxDepth": 2,
+		"warning": result.Summary.CoverageWarning,
+	})
+	analysisID := uuid.NewString()
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO impact_analyses (
+			id,review_run_id,base_snapshot_id,head_snapshot_id,max_depth,
+			blast_radius_score,risk_level,coverage
+		) VALUES ($1,$2,$3,$4,2,$5,$6,$7)
+		ON CONFLICT (review_run_id) DO UPDATE SET
+			base_snapshot_id=EXCLUDED.base_snapshot_id,head_snapshot_id=EXCLUDED.head_snapshot_id,
+			blast_radius_score=EXCLUDED.blast_radius_score,risk_level=EXCLUDED.risk_level,
+			coverage=EXCLUDED.coverage,updated_at=now()
+		RETURNING id`, analysisID, reviewRunID, baseID, headID, result.Summary.Score,
+		result.Summary.Level, json.RawMessage(coverage)).Scan(&analysisID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM symbol_changes WHERE impact_analysis_id=$1`, analysisID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM impact_paths WHERE impact_analysis_id=$1`, analysisID); err != nil {
+		return err
+	}
+	for _, change := range result.Changes {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO symbol_changes (
+				id,impact_analysis_id,change_type,kind,qualified_name,before_stable_key,
+				after_stable_key,before_path,after_path,body_changed,signature_changed
+			) VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''),NULLIF($8,''),NULLIF($9,''),$10,$11)`,
+			uuid.NewString(), analysisID, change.Type, change.Kind, change.QualifiedName,
+			change.BeforeStableKey, change.AfterStableKey, change.BeforePath, change.AfterPath,
+			change.BodyChanged, change.SignatureChanged); err != nil {
+			return err
+		}
+	}
+	for _, path := range result.Paths {
+		keys, _ := json.Marshal(path.Keys)
+		evidence, _ := json.Marshal(path.Evidence)
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO impact_paths (
+				id,impact_analysis_id,changed_stable_key,impacted_stable_key,impacted_name,
+				impacted_path,impacted_kind,depth,score,path,evidence
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+			uuid.NewString(), analysisID, path.ChangedStableKey, path.ImpactedStableKey,
+			path.ImpactedName, path.ImpactedPath, path.ImpactedKind, path.Depth, path.Score,
+			json.RawMessage(keys), json.RawMessage(evidence)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *Store) RecordLLMCall(ctx context.Context, call llm.Call) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO llm_calls (
+			id,review_run_id,provider,model,task,prompt_hash,status,input_chars,output_chars,
+			input_tokens,output_tokens,duration_ms,http_status,error_code,error_detail,created_at
+		) VALUES ($1,NULLIF($2,'')::uuid,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,
+			NULLIF($14,''),NULLIF($15,''),$16)`,
+		call.ID, call.ReviewRunID, call.Provider, call.Model, call.Task, call.PromptHash,
+		call.Status, call.InputChars, call.OutputChars, call.InputTokens, call.OutputTokens,
+		call.DurationMS, call.HTTPStatus, call.ErrorCode, call.ErrorDetail, call.CreatedAt)
 	return err
 }
 

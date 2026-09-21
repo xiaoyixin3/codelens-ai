@@ -9,7 +9,8 @@ All notable changes to CodeLens AI are documented in this file. The project foll
 - Made Go 1.27 the primary runtime for the webhook API, worker, migration command, GitHub App client, deterministic review, and publication pipeline.
 - Replaced the production Redis/BullMQ dependency with a leased PostgreSQL job queue using bounded retries and stale-job recovery.
 - Added Go unit tests, Go CodeQL analysis, Go module Dependabot updates, and Go binaries to the production image.
-- Retained TypeScript benchmark, lifecycle, and advanced AST/impact/LLM modules as an explicit compatibility layer during parity migration.
+- Ported repository policy loading, Go/TypeScript/JavaScript symbol snapshots, bounded impact analysis, optional LLM summary/risk review, provider fallback, budgets, redaction, and telemetry into the Go worker.
+- Retained TypeScript benchmark, lifecycle, compatibility tests, and legacy worker only as an explicit rollback/tooling layer.
 
 ## [1.0.0-beta.1] - 2026-09-19
 

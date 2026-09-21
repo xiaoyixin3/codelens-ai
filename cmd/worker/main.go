@@ -13,6 +13,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/xiaoyixin3/codelens-ai/internal/config"
 	"github.com/xiaoyixin3/codelens-ai/internal/githubapp"
+	"github.com/xiaoyixin3/codelens-ai/internal/intelligence"
+	"github.com/xiaoyixin3/codelens-ai/internal/llm"
+	"github.com/xiaoyixin3/codelens-ai/internal/policy"
 	"github.com/xiaoyixin3/codelens-ai/internal/review"
 	"github.com/xiaoyixin3/codelens-ai/internal/security"
 	"github.com/xiaoyixin3/codelens-ai/internal/store"
@@ -49,7 +52,14 @@ func main() {
 		slog.Error("GitHub App configuration is invalid", "error", err)
 		os.Exit(1)
 	}
-	engine := review.New(database, github, cfg.MaxChangedFiles, cfg.MaxPatchChars, cfg.MaxInlineComments)
+	policyLoader := policy.NewLoader(github, database, cfg.MaxInlineComments)
+	codeIntelligence := intelligence.New(github, database, cfg.MaxChangedFiles, cfg.MaxIndexFileBytes)
+	providers := []llm.Provider{{Name: "primary", BaseURL: cfg.LLMBaseURL, APIKey: cfg.LLMAPIKey, Model: cfg.LLMModel}}
+	if cfg.LLMFallbackBaseURL != "" {
+		providers = append(providers, llm.Provider{Name: "fallback", BaseURL: cfg.LLMFallbackBaseURL, APIKey: cfg.LLMFallbackAPIKey, Model: cfg.LLMFallbackModel})
+	}
+	model := llm.New(providers, database, cfg.LLMMaxCallsPerRun, cfg.LLMMaxInputChars)
+	engine := review.New(database, github, cfg.MaxChangedFiles, cfg.MaxPatchChars, cfg.MaxInlineComments, policyLoader, codeIntelligence, model)
 
 	slog.Info("CodeLens Go worker started", "concurrency", 2)
 	semaphore := make(chan struct{}, 2)

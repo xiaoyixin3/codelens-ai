@@ -21,16 +21,17 @@ PostgreSQL replaces BullMQ as the production job queue. Workers claim jobs with
 three times with exponential backoff. The queue row is deleted with its review run,
 so operational state and review data share one transactional boundary.
 
-The existing database schema and webhook contracts remain compatible. TypeScript
-is retained as a temporary analysis/tooling layer for benchmark labeling,
-lifecycle commands, and advanced AST/impact/LLM parity work.
+The existing database schema and webhook contracts remain compatible. Repository
+policy, changed-file symbol indexing for Go/TypeScript/JavaScript, impact
+traversal, and optional LLM summary/risk review execute inside the Go worker.
+TypeScript is retained as a temporary tooling and rollback layer for benchmark
+labeling, lifecycle commands, and compatibility verification.
 
 ## Consequences
 
 - Production API and worker deployments no longer require Redis.
 - The runtime ships as static Go binaries in the existing non-root image.
 - Existing review history and GitHub App installations remain valid.
-- The legacy TypeScript worker remains an explicit rollback command until advanced
-  analyzer parity is complete.
+- The legacy TypeScript worker remains an explicit rollback command during beta.
 - New runtime behavior requires Go tests; legacy analysis behavior continues to
   require the TypeScript test suite during the migration window.

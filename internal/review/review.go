@@ -14,6 +14,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/xiaoyixin3/codelens-ai/internal/contracts"
 	"github.com/xiaoyixin3/codelens-ai/internal/githubapp"
+	"github.com/xiaoyixin3/codelens-ai/internal/intelligence"
+	"github.com/xiaoyixin3/codelens-ai/internal/llm"
+	"github.com/xiaoyixin3/codelens-ai/internal/policy"
 	"github.com/xiaoyixin3/codelens-ai/internal/security"
 	"github.com/xiaoyixin3/codelens-ai/internal/store"
 )
@@ -40,10 +43,24 @@ type Engine struct {
 	maxFiles      int
 	maxPatchChars int
 	maxComments   int
+	policy        *policy.Loader
+	intelligence  *intelligence.Analyzer
+	llm           *llm.Client
 }
 
-func New(repository Repository, github GitHub, maxFiles, maxPatchChars, maxComments int) *Engine {
-	return &Engine{store: repository, github: github, maxFiles: maxFiles, maxPatchChars: maxPatchChars, maxComments: maxComments}
+func New(repository Repository, github GitHub, maxFiles, maxPatchChars, maxComments int, components ...any) *Engine {
+	engine := &Engine{store: repository, github: github, maxFiles: maxFiles, maxPatchChars: maxPatchChars, maxComments: maxComments}
+	for _, component := range components {
+		switch value := component.(type) {
+		case *policy.Loader:
+			engine.policy = value
+		case *intelligence.Analyzer:
+			engine.intelligence = value
+		case *llm.Client:
+			engine.llm = value
+		}
+	}
+	return engine
 }
 
 func (e *Engine) Execute(ctx context.Context, job contracts.ReviewJob) error {
@@ -93,16 +110,75 @@ func (e *Engine) Execute(ctx context.Context, job contracts.ReviewJob) error {
 		return e.store.UpdateReviewRun(ctx, run.ID, "stale", nil, "", "")
 	}
 
-	summary := Summarize(pull, e.maxFiles)
-	findings := ReviewRisk(pull, e.maxPatchChars, e.maxComments)
+	originalFileCount := len(pull.Files)
+	configured := policy.Policy{Language: "en", MaxInlineComments: e.maxComments, Include: []string{"**/*"}, MinimumConfidence: map[string]float64{}}
+	if e.policy != nil {
+		configured, err = e.policy.Load(ctx, run.RepositoryID, job.InstallationID, job.Owner, job.Repo, job.HeadSHA)
+		if err != nil {
+			return err
+		}
+		updater, ok := e.store.(interface {
+			UpdateReviewRunConfig(context.Context, string, string) error
+		})
+		if !ok {
+			return errors.New("review repository does not support policy configuration hashes")
+		}
+		if err := updater.UpdateReviewRunConfig(ctx, run.ID, configured.Hash); err != nil {
+			return err
+		}
+		pull.Files = policy.FilterFiles(pull.Files, configured)
+	}
+	summary := SummarizeWithLanguage(pull, e.maxFiles, configured.Language)
+	if e.llm != nil && e.llm.Enabled() {
+		if generated, generateErr := e.llm.GenerateSummary(ctx, run.ID, pull, configured, e.maxFiles, e.maxPatchChars); generateErr == nil {
+			summary = generated
+		}
+	}
+	if e.intelligence != nil {
+		analysis, analysisErr := e.intelligence.Analyze(ctx, run.ID, run.RepositoryID, job, pull)
+		if analysisErr != nil {
+			return analysisErr
+		}
+		summary.Impact = &analysis.Summary
+		if riskRank(analysis.Summary.Level) > riskRank(summary.RiskLevel) {
+			summary.RiskLevel = analysis.Summary.Level
+		}
+	}
+	commentLimit := configured.MaxInlineComments
+	if commentLimit > e.maxComments {
+		commentLimit = e.maxComments
+	}
+	findings := ReviewRisk(pull, e.maxPatchChars, 1000)
+	if e.llm != nil && e.llm.Enabled() {
+		if generated, reviewErr := e.llm.ReviewRisk(ctx, run.ID, pull, configured, e.maxFiles, e.maxPatchChars); reviewErr == nil {
+			findings = mergeFindings(findings, generated)
+		}
+	}
+	sort.SliceStable(findings, func(i, j int) bool { return severityRank(findings[i].Severity) > severityRank(findings[j].Severity) })
+	for index := range findings {
+		findings[index].Publishable = index < commentLimit
+		threshold := defaultConfidence(findings[index].Severity)
+		if override, exists := configured.MinimumConfidence[findings[index].Severity]; exists {
+			threshold = override
+		}
+		if findings[index].Confidence < threshold {
+			findings[index].Publishable = false
+			findings[index].Status = "rejected"
+		}
+	}
 	if len(findings) > 0 {
-		published := 0
+		published, verified, rejected := 0, 0, 0
 		for _, finding := range findings {
 			if finding.Publishable {
 				published++
 			}
+			if finding.Status == "verified" {
+				verified++
+			} else {
+				rejected++
+			}
 		}
-		summary.Findings = &contracts.FindingSummary{Candidates: len(findings), Verified: len(findings), Published: published, Items: findings}
+		summary.Findings = &contracts.FindingSummary{Candidates: len(findings), Verified: verified, Published: published, Rejected: rejected, Items: findings}
 		if hasSeverity(findings, "critical", "high") {
 			summary.RiskLevel = "high"
 		} else if summary.RiskLevel == "low" && hasSeverity(findings, "medium") {
@@ -111,6 +187,9 @@ func (e *Engine) Execute(ctx context.Context, job contracts.ReviewJob) error {
 		if err := e.store.SaveFindings(ctx, run.ID, findings); err != nil {
 			return err
 		}
+	}
+	if e.policy != nil {
+		summary.Policy = &contracts.PolicySummary{ConfigHash: configured.Hash, Rules: len(configured.Rules), IncludedFiles: len(pull.Files), ExcludedFiles: originalFileCount - len(pull.Files), Blocking: configured.Blocking, Language: configured.Language, Warnings: configured.Warnings}
 	}
 
 	publishHead, err := e.github.CurrentHead(ctx, job.InstallationID, job.Owner, job.Repo, job.PullNumber)
@@ -142,7 +221,9 @@ func (e *Engine) Execute(ctx context.Context, job contracts.ReviewJob) error {
 		})
 	}
 	conclusion := "success"
-	if summary.RiskLevel == "high" {
+	if summary.RiskLevel == "high" && configured.Blocking {
+		conclusion = "failure"
+	} else if summary.RiskLevel == "high" {
 		conclusion = "neutral"
 	}
 	if err := e.github.CompleteCheck(ctx, job.InstallationID, job.Owner, job.Repo, checkID, conclusion, "CodeLens review: "+summary.RiskLevel+" risk", markdown, annotations); err != nil {
@@ -177,6 +258,10 @@ var (
 )
 
 func Summarize(pull githubapp.PullRequest, maxFiles int) contracts.ChangeSummary {
+	return SummarizeWithLanguage(pull, maxFiles, "en")
+}
+
+func SummarizeWithLanguage(pull githubapp.PullRequest, maxFiles int, language string) contracts.ChangeSummary {
 	files := pull.Files
 	truncated := false
 	if len(files) > maxFiles {
@@ -203,17 +288,33 @@ func Summarize(pull githubapp.PullRequest, maxFiles int) contracts.ChangeSummary
 	}
 	reasons := []string{}
 	if len(highRisk) > 0 {
-		reasons = append(reasons, "Touches sensitive areas: "+strings.Join(highRisk[:min(len(highRisk), 5)], ", ")+".")
+		if language == "zh" {
+			reasons = append(reasons, "涉及敏感区域："+strings.Join(highRisk[:min(len(highRisk), 5)], ", ")+"。")
+		} else {
+			reasons = append(reasons, "Touches sensitive areas: "+strings.Join(highRisk[:min(len(highRisk), 5)], ", ")+".")
+		}
 	}
 	if !hasTests && sourceFiles {
-		reasons = append(reasons, "No test file is included in the reviewed change set.")
+		if language == "zh" {
+			reasons = append(reasons, "本次审核范围内没有测试文件。")
+		} else {
+			reasons = append(reasons, "No test file is included in the reviewed change set.")
+		}
 	}
 	large := additions+deletions > 1000
 	if large {
-		reasons = append(reasons, "The change exceeds 1,000 modified lines and deserves staged review.")
+		if language == "zh" {
+			reasons = append(reasons, "变更超过 1,000 行，建议分阶段审核。")
+		} else {
+			reasons = append(reasons, "The change exceeds 1,000 modified lines and deserves staged review.")
+		}
 	}
 	if truncated {
-		reasons = append(reasons, "The file budget was reached; some files were not reviewed.")
+		if language == "zh" {
+			reasons = append(reasons, "已达到文件预算，部分文件未审核。")
+		} else {
+			reasons = append(reasons, "The file budget was reached; some files were not reviewed.")
+		}
 	}
 	risk := "low"
 	if len(highRisk) > 0 || large {
@@ -223,10 +324,18 @@ func Summarize(pull githubapp.PullRequest, maxFiles int) contracts.ChangeSummary
 	}
 	intent := pull.Title
 	if strings.TrimSpace(intent) == "" {
-		intent = "Review the proposed code change"
+		if language == "zh" {
+			intent = "审核拟议代码变更"
+		} else {
+			intent = "Review the proposed code change"
+		}
+	}
+	overview := fmt.Sprintf("This PR changes %d file(s) with +%d/-%d lines in the reviewed scope.", len(pull.Files), additions, deletions)
+	if language == "zh" {
+		overview = fmt.Sprintf("本 PR 在审核范围内变更 %d 个文件，共 +%d/-%d 行。", len(pull.Files), additions, deletions)
 	}
 	return contracts.ChangeSummary{
-		Intent: intent, Overview: fmt.Sprintf("This PR changes %d file(s) with +%d/-%d lines in the reviewed scope.", len(pull.Files), additions, deletions),
+		Intent: intent, Overview: overview,
 		Files: resultFiles, RiskLevel: risk, RiskReasons: reasons,
 		Coverage: contracts.Coverage{ReviewedFiles: len(files), TotalFiles: len(pull.Files), Truncated: truncated},
 	}
@@ -371,6 +480,19 @@ func RenderMarkdown(summary contracts.ChangeSummary) string {
 			}
 		}
 	}
+	if summary.Impact != nil {
+		fmt.Fprintf(&builder, "\n### Impact analysis\n\n- Blast radius: **%s** (%d/100)\n- Changed symbols: %d; impacted symbols: %d\n", strings.ToUpper(summary.Impact.Level), summary.Impact.Score, summary.Impact.ChangedSymbols, summary.Impact.ImpactedSymbols)
+		for _, path := range summary.Impact.TopPaths {
+			fmt.Fprintf(&builder, "- `%s` → `%s` (depth %d, score %.3f)\n", path.ChangedName, path.ImpactedName, path.Depth, path.Score)
+		}
+		fmt.Fprintf(&builder, "\n> %s\n", summary.Impact.CoverageWarning)
+	}
+	if summary.Policy != nil {
+		fmt.Fprintf(&builder, "\n### Repository policy\n\n- Rules: %d; included files: %d; excluded files: %d; blocking: %t; language: %s\n", summary.Policy.Rules, summary.Policy.IncludedFiles, summary.Policy.ExcludedFiles, summary.Policy.Blocking, summary.Policy.Language)
+		for _, warning := range summary.Policy.Warnings {
+			fmt.Fprintf(&builder, "- Warning: %s\n", warning)
+		}
+	}
 	fmt.Fprintf(&builder, "\n> Coverage: %d/%d files reviewed%s.\n", summary.Coverage.ReviewedFiles, summary.Coverage.TotalFiles, map[bool]string{true: " (truncated)", false: ""}[summary.Coverage.Truncated])
 	return builder.String()
 }
@@ -387,6 +509,24 @@ func hasSeverity(findings []contracts.Finding, values ...string) bool {
 }
 func severityRank(value string) int {
 	return map[string]int{"critical": 4, "high": 3, "medium": 2, "low": 1}[value]
+}
+func riskRank(value string) int { return map[string]int{"high": 3, "medium": 2, "low": 1}[value] }
+func defaultConfidence(value string) float64 {
+	return map[string]float64{"critical": .85, "high": .85, "medium": .8, "low": 1.01}[value]
+}
+func mergeFindings(groups ...[]contracts.Finding) []contracts.Finding {
+	seen := map[string]bool{}
+	result := []contracts.Finding{}
+	for _, group := range groups {
+		for _, finding := range group {
+			if seen[finding.Fingerprint] {
+				continue
+			}
+			seen[finding.Fingerprint] = true
+			result = append(result, finding)
+		}
+	}
+	return result
 }
 func truncate(value string, maximum int) string {
 	if len(value) <= maximum {

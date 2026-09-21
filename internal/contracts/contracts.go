@@ -43,6 +43,34 @@ type ChangeSummary struct {
 	RiskReasons []string        `json:"riskReasons"`
 	Coverage    Coverage        `json:"coverage"`
 	Findings    *FindingSummary `json:"findings,omitempty"`
+	Impact      *ImpactSummary  `json:"impact,omitempty"`
+	Policy      *PolicySummary  `json:"policy,omitempty"`
+}
+
+type ImpactSummary struct {
+	Level           string       `json:"level"`
+	Score           int          `json:"score"`
+	ChangedSymbols  int          `json:"changedSymbols"`
+	ImpactedSymbols int          `json:"impactedSymbols"`
+	TopPaths        []ImpactPath `json:"topPaths"`
+	CoverageWarning string       `json:"coverageWarning"`
+}
+
+type ImpactPath struct {
+	ChangedName  string  `json:"changedName"`
+	ImpactedName string  `json:"impactedName"`
+	Depth        int     `json:"depth"`
+	Score        float64 `json:"score"`
+}
+
+type PolicySummary struct {
+	ConfigHash    string   `json:"configHash"`
+	Rules         int      `json:"rules"`
+	IncludedFiles int      `json:"includedFiles"`
+	ExcludedFiles int      `json:"excludedFiles"`
+	Blocking      bool     `json:"blocking"`
+	Language      string   `json:"language"`
+	Warnings      []string `json:"warnings"`
 }
 
 type FileSummary struct {

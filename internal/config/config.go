@@ -61,6 +61,15 @@ type Config struct {
 	MaxChangedFiles     int
 	MaxPatchChars       int
 	MaxInlineComments   int
+	MaxIndexFileBytes   int
+	LLMBaseURL          string
+	LLMAPIKey           string
+	LLMModel            string
+	LLMFallbackBaseURL  string
+	LLMFallbackAPIKey   string
+	LLMFallbackModel    string
+	LLMMaxCallsPerRun   int
+	LLMMaxInputChars    int
 }
 
 func Load() (Config, error) {
@@ -76,6 +85,15 @@ func Load() (Config, error) {
 		MaxChangedFiles:     envInt("MAX_CHANGED_FILES", 100),
 		MaxPatchChars:       envInt("MAX_PATCH_CHARS", 120000),
 		MaxInlineComments:   envInt("MAX_INLINE_COMMENTS", 8),
+		MaxIndexFileBytes:   envInt("MAX_INDEX_FILE_BYTES", 500000),
+		LLMBaseURL:          strings.TrimRight(strings.TrimSpace(os.Getenv("LLM_BASE_URL")), "/"),
+		LLMAPIKey:           strings.TrimSpace(os.Getenv("LLM_API_KEY")),
+		LLMModel:            strings.TrimSpace(os.Getenv("LLM_MODEL")),
+		LLMFallbackBaseURL:  strings.TrimRight(strings.TrimSpace(os.Getenv("LLM_FALLBACK_BASE_URL")), "/"),
+		LLMFallbackAPIKey:   strings.TrimSpace(os.Getenv("LLM_FALLBACK_API_KEY")),
+		LLMFallbackModel:    strings.TrimSpace(os.Getenv("LLM_FALLBACK_MODEL")),
+		LLMMaxCallsPerRun:   envInt("LLM_MAX_CALLS_PER_RUN", 4),
+		LLMMaxInputChars:    envInt("LLM_MAX_INPUT_CHARS_PER_RUN", 250000),
 	}
 
 	if cfg.Port < 1 || cfg.Port > 65535 {
@@ -87,8 +105,14 @@ func Load() (Config, error) {
 	if len(cfg.GitHubWebhookSecret) < 16 {
 		return Config{}, errors.New("GITHUB_WEBHOOK_SECRET must contain at least 16 characters")
 	}
-	if cfg.WebhookRateLimitMax < 1 || cfg.MaxChangedFiles < 1 || cfg.MaxPatchChars < 1 || cfg.MaxInlineComments < 0 {
+	if cfg.WebhookRateLimitMax < 1 || cfg.MaxChangedFiles < 1 || cfg.MaxPatchChars < 1 || cfg.MaxInlineComments < 0 || cfg.MaxIndexFileBytes < 1 || cfg.LLMMaxCallsPerRun < 0 || cfg.LLMMaxInputChars < 0 {
 		return Config{}, errors.New("numeric limits are invalid")
+	}
+	if (cfg.LLMBaseURL == "") != (cfg.LLMAPIKey == "") || (cfg.LLMBaseURL == "") != (cfg.LLMModel == "") {
+		return Config{}, errors.New("LLM_BASE_URL, LLM_API_KEY, and LLM_MODEL must be configured together")
+	}
+	if (cfg.LLMFallbackBaseURL == "") != (cfg.LLMFallbackAPIKey == "") || (cfg.LLMFallbackBaseURL == "") != (cfg.LLMFallbackModel == "") {
+		return Config{}, errors.New("LLM_FALLBACK_BASE_URL, LLM_FALLBACK_API_KEY, and LLM_FALLBACK_MODEL must be configured together")
 	}
 	return cfg, nil
 }

@@ -26,7 +26,7 @@ Automated gates last verified on 2026-09-20 with PostgreSQL 17, Redis 8.10.1, 57
   - Workbench evidence: [`docs/benchmark-labeling-workbench-2026-09-20.md`](docs/benchmark-labeling-workbench-2026-09-20.md). Candidates do not satisfy this gate until they are individually reviewed and approved.
 - [ ] Five to ten design-partner repositories approved for staged rollout
 - [ ] `npm run beta:readiness` reports at least 20 eligible reviews and a seven-day success rate of at least 95%
-  - Current observation on 2026-09-20: 6/20 eligible reviews, 6 completed, 0 failed, 100% success rate.
+  - Current observation on 2026-09-21: 13/20 eligible reviews, 13 completed, 0 failed, 100% success rate.
 - [x] Retention, deletion, backup, and restore drills completed
   - Evidence: [`docs/operations-drill-2026-09-19.md`](docs/operations-drill-2026-09-19.md)
 - [ ] Model-provider account budget and alerting configured
