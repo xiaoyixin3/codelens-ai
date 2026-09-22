@@ -1,6 +1,6 @@
 # CodeLens AI V2: LLM provider platform
 
-Status: proposed  
+Status: in progress; Milestone A implemented
 Target: V2.0  
 Primary runtime: Go
 
@@ -33,6 +33,23 @@ V1 configuration is global and deployment-owned. `LLM_BASE_URL`, `LLM_API_KEY`,
 and `LLM_MODEL` must be set on the server. There is no user-facing connection
 flow, repository-specific model policy, encrypted credential store, connection
 test, cost calculation, or model-health view.
+
+## Implementation status
+
+Milestone A now includes:
+
+- explicit GitHub installation and repository tenancy tables;
+- provider-connection and repository-policy schema;
+- AES-256-GCM credential encryption with row/tenant-bound authenticated context;
+- provider-neutral structured-generation and connection-test interface;
+- OpenAI-compatible, OpenAI Responses, and Anthropic request adapters;
+- HTTPS/private-network validation, redirect rejection, bounded retries, and
+  redacted errors;
+- protected create, list, get, update, rotate, test, and delete APIs;
+- non-secret credential fingerprints and provider mutation audit events.
+
+The Milestone A admin token is a transitional self-hosted beta boundary. GitHub
+owner authentication and the visual setup console remain Milestone C work.
 
 ## V2 scope
 
@@ -252,6 +269,9 @@ Operational targets for V2 beta:
 - make environment variables a legacy deployment-level default.
 
 Exit condition: a connection can be created and tested without restarting services.
+
+Status: complete in the Go API. See
+[Model provider control plane](model-provider-control-plane.md).
 
 ### Milestone B — repository routing
 

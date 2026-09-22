@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/xiaoyixin3/codelens-ai/internal/config"
+	"github.com/xiaoyixin3/codelens-ai/internal/credentials"
 	"github.com/xiaoyixin3/codelens-ai/internal/httpapi"
 	"github.com/xiaoyixin3/codelens-ai/internal/store"
 )
@@ -32,10 +33,20 @@ func main() {
 		os.Exit(1)
 	}
 	defer database.Close()
+	var credentialVault *credentials.Vault
+	if cfg.CredentialKey != "" {
+		credentialVault, err = credentials.New(cfg.CredentialKey)
+		if err != nil {
+			slog.Error("invalid credential encryption configuration", "error", err)
+			os.Exit(1)
+		}
+	}
 
 	handler := httpapi.New(httpapi.Options{
 		Backend: database, WebhookSecret: cfg.GitHubWebhookSecret, GitHubAppID: cfg.GitHubAppID,
 		RateLimitPerMin: cfg.WebhookRateLimitMax,
+		ProviderBackend: database, CredentialVault: credentialVault,
+		ModelAdminToken: cfg.ModelAdminToken, AllowPrivateModels: cfg.AllowPrivateModels,
 	}).Handler()
 	server := &http.Server{Addr: cfg.Address(), Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
 	go func() {

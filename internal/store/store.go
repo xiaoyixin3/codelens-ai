@@ -47,6 +47,54 @@ type Publication struct {
 	SummaryCommentID *int64
 }
 
+type ProviderConnection struct {
+	ID                    string     `json:"id"`
+	InstallationID        int64      `json:"installationId"`
+	Name                  string     `json:"name"`
+	ProviderKind          string     `json:"providerKind"`
+	BaseURL               string     `json:"baseUrl"`
+	CredentialCiphertext  string     `json:"-"`
+	CredentialKeyVersion  int        `json:"-"`
+	CredentialFingerprint string     `json:"credentialFingerprint"`
+	DefaultModel          string     `json:"defaultModel"`
+	Enabled               bool       `json:"enabled"`
+	TimeoutSeconds        int        `json:"timeoutSeconds"`
+	MaxRetries            int        `json:"maxRetries"`
+	LastTestStatus        string     `json:"lastTestStatus"`
+	LastTestDetail        string     `json:"lastTestDetail,omitempty"`
+	LastTestedAt          *time.Time `json:"lastTestedAt,omitempty"`
+	CreatedAt             time.Time  `json:"createdAt"`
+	UpdatedAt             time.Time  `json:"updatedAt"`
+}
+
+type CreateProviderConnectionInput struct {
+	ID                    string
+	InstallationID        int64
+	Name                  string
+	ProviderKind          string
+	BaseURL               string
+	CredentialCiphertext  string
+	CredentialKeyVersion  int
+	CredentialFingerprint string
+	DefaultModel          string
+	Enabled               bool
+	TimeoutSeconds        int
+	MaxRetries            int
+	Actor                 string
+}
+
+type UpdateProviderConnectionInput struct {
+	InstallationID int64
+	ID             string
+	Name           string
+	BaseURL        string
+	DefaultModel   string
+	Enabled        bool
+	TimeoutSeconds int
+	MaxRetries     int
+	Actor          string
+}
+
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	pool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
@@ -134,6 +182,27 @@ func (s *Store) CreateOrGetReviewRunAndEnqueue(ctx context.Context, input Create
 		return contracts.ReviewRun{}, false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO github_installations (id,account_login,active)
+		VALUES ($1,$2,true)
+		ON CONFLICT (id) DO UPDATE SET account_login=EXCLUDED.account_login,active=true,updated_at=now()`,
+		job.InstallationID, job.Owner); err != nil {
+		return contracts.ReviewRun{}, false, err
+	}
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM repository_model_policies
+		WHERE github_repository_id=$1 AND installation_id<>$2`, input.RepositoryID, job.InstallationID); err != nil {
+		return contracts.ReviewRun{}, false, err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO github_repositories (id,installation_id,owner_login,name,selected,last_seen_at)
+		VALUES ($1,$2,$3,$4,true,now())
+		ON CONFLICT (id) DO UPDATE SET installation_id=EXCLUDED.installation_id,
+			owner_login=EXCLUDED.owner_login,name=EXCLUDED.name,selected=true,
+			last_seen_at=now(),updated_at=now()`,
+		input.RepositoryID, job.InstallationID, job.Owner, job.Repo); err != nil {
+		return contracts.ReviewRun{}, false, err
+	}
 	id := uuid.NewString()
 	run, err := scanReviewRun(tx.QueryRow(ctx, `
 		INSERT INTO review_runs (
@@ -174,6 +243,195 @@ func (s *Store) CreateOrGetReviewRunAndEnqueue(ctx context.Context, input Create
 		return contracts.ReviewRun{}, false, err
 	}
 	return run, created, nil
+}
+
+func (s *Store) CreateProviderConnection(ctx context.Context, input CreateProviderConnectionInput) (ProviderConnection, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return ProviderConnection{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO github_installations (id,account_login,active)
+		VALUES ($1,$2,true)
+		ON CONFLICT (id) DO UPDATE SET active=true,updated_at=now()`,
+		input.InstallationID, fmt.Sprintf("installation:%d", input.InstallationID)); err != nil {
+		return ProviderConnection{}, err
+	}
+	connection, err := scanProviderConnection(tx.QueryRow(ctx, `
+		INSERT INTO provider_connections (
+			id,installation_id,name,provider_kind,base_url,credential_ciphertext,
+			credential_key_version,credential_fingerprint,default_model,enabled,
+			timeout_seconds,max_retries
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+		RETURNING id,installation_id,name,provider_kind,base_url,credential_ciphertext,
+			credential_key_version,credential_fingerprint,default_model,enabled,
+			timeout_seconds,max_retries,last_test_status,COALESCE(last_test_detail,''),
+			last_tested_at,created_at,updated_at`,
+		input.ID, input.InstallationID, input.Name, input.ProviderKind, input.BaseURL,
+		input.CredentialCiphertext, input.CredentialKeyVersion, input.CredentialFingerprint,
+		input.DefaultModel, input.Enabled, input.TimeoutSeconds, input.MaxRetries))
+	if err != nil {
+		return ProviderConnection{}, err
+	}
+	if err := insertProviderAudit(ctx, tx, input.InstallationID, input.ID, "created", input.Actor, map[string]any{"providerKind": input.ProviderKind, "model": input.DefaultModel}); err != nil {
+		return ProviderConnection{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return ProviderConnection{}, err
+	}
+	return connection, nil
+}
+
+func (s *Store) ListProviderConnections(ctx context.Context, installationID int64) ([]ProviderConnection, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id,installation_id,name,provider_kind,base_url,credential_ciphertext,
+			credential_key_version,credential_fingerprint,default_model,enabled,
+			timeout_seconds,max_retries,last_test_status,COALESCE(last_test_detail,''),
+			last_tested_at,created_at,updated_at
+		FROM provider_connections WHERE installation_id=$1 ORDER BY name,id`, installationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	connections := make([]ProviderConnection, 0)
+	for rows.Next() {
+		connection, err := scanProviderConnection(rows)
+		if err != nil {
+			return nil, err
+		}
+		connections = append(connections, connection)
+	}
+	return connections, rows.Err()
+}
+
+func (s *Store) GetProviderConnection(ctx context.Context, installationID int64, id string) (ProviderConnection, error) {
+	return scanProviderConnection(s.pool.QueryRow(ctx, `
+		SELECT id,installation_id,name,provider_kind,base_url,credential_ciphertext,
+			credential_key_version,credential_fingerprint,default_model,enabled,
+			timeout_seconds,max_retries,last_test_status,COALESCE(last_test_detail,''),
+			last_tested_at,created_at,updated_at
+		FROM provider_connections WHERE installation_id=$1 AND id=$2`, installationID, id))
+}
+
+func (s *Store) UpdateProviderConnection(ctx context.Context, input UpdateProviderConnectionInput) (ProviderConnection, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return ProviderConnection{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	connection, err := scanProviderConnection(tx.QueryRow(ctx, `
+		UPDATE provider_connections SET name=$3,base_url=$4,default_model=$5,enabled=$6,
+			timeout_seconds=$7,max_retries=$8,last_test_status='untested',
+			last_test_detail=NULL,last_tested_at=NULL,updated_at=now()
+		WHERE installation_id=$1 AND id=$2
+		RETURNING id,installation_id,name,provider_kind,base_url,credential_ciphertext,
+			credential_key_version,credential_fingerprint,default_model,enabled,
+			timeout_seconds,max_retries,last_test_status,COALESCE(last_test_detail,''),
+			last_tested_at,created_at,updated_at`, input.InstallationID, input.ID, input.Name,
+		input.BaseURL, input.DefaultModel, input.Enabled, input.TimeoutSeconds, input.MaxRetries))
+	if err != nil {
+		return ProviderConnection{}, err
+	}
+	if err := insertProviderAudit(ctx, tx, input.InstallationID, input.ID, "updated", input.Actor, map[string]any{"model": input.DefaultModel, "enabled": input.Enabled}); err != nil {
+		return ProviderConnection{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return ProviderConnection{}, err
+	}
+	return connection, nil
+}
+
+func (s *Store) RotateProviderCredential(ctx context.Context, installationID int64, id, ciphertext, fingerprint, actor string, keyVersion int) (ProviderConnection, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return ProviderConnection{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	connection, err := scanProviderConnection(tx.QueryRow(ctx, `
+		UPDATE provider_connections SET credential_ciphertext=$3,credential_key_version=$4,
+			credential_fingerprint=$5,last_test_status='untested',last_test_detail=NULL,
+			last_tested_at=NULL,updated_at=now()
+		WHERE installation_id=$1 AND id=$2
+		RETURNING id,installation_id,name,provider_kind,base_url,credential_ciphertext,
+			credential_key_version,credential_fingerprint,default_model,enabled,
+			timeout_seconds,max_retries,last_test_status,COALESCE(last_test_detail,''),
+			last_tested_at,created_at,updated_at`, installationID, id, ciphertext, keyVersion, fingerprint))
+	if err != nil {
+		return ProviderConnection{}, err
+	}
+	if err := insertProviderAudit(ctx, tx, installationID, id, "rotated", actor, map[string]any{"credentialFingerprint": fingerprint}); err != nil {
+		return ProviderConnection{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return ProviderConnection{}, err
+	}
+	return connection, nil
+}
+
+func (s *Store) RecordProviderTest(ctx context.Context, installationID int64, id, status, detail, actor string) (ProviderConnection, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return ProviderConnection{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	connection, err := scanProviderConnection(tx.QueryRow(ctx, `
+		UPDATE provider_connections SET last_test_status=$3,last_test_detail=NULLIF($4,''),
+			last_tested_at=now(),updated_at=now()
+		WHERE installation_id=$1 AND id=$2
+		RETURNING id,installation_id,name,provider_kind,base_url,credential_ciphertext,
+			credential_key_version,credential_fingerprint,default_model,enabled,
+			timeout_seconds,max_retries,last_test_status,COALESCE(last_test_detail,''),
+			last_tested_at,created_at,updated_at`, installationID, id, status, detail))
+	if err != nil {
+		return ProviderConnection{}, err
+	}
+	if err := insertProviderAudit(ctx, tx, installationID, id, "tested", actor, map[string]any{"status": status}); err != nil {
+		return ProviderConnection{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return ProviderConnection{}, err
+	}
+	return connection, nil
+}
+
+func (s *Store) DeleteProviderConnection(ctx context.Context, installationID int64, id, actor string) error {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	result, err := tx.Exec(ctx, `DELETE FROM provider_connections WHERE installation_id=$1 AND id=$2`, installationID, id)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	if err := insertProviderAudit(ctx, tx, installationID, id, "deleted", actor, map[string]any{}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func scanProviderConnection(row pgx.Row) (ProviderConnection, error) {
+	var connection ProviderConnection
+	err := row.Scan(&connection.ID, &connection.InstallationID, &connection.Name,
+		&connection.ProviderKind, &connection.BaseURL, &connection.CredentialCiphertext,
+		&connection.CredentialKeyVersion, &connection.CredentialFingerprint,
+		&connection.DefaultModel, &connection.Enabled, &connection.TimeoutSeconds,
+		&connection.MaxRetries, &connection.LastTestStatus, &connection.LastTestDetail,
+		&connection.LastTestedAt, &connection.CreatedAt, &connection.UpdatedAt)
+	return connection, err
+}
+
+func insertProviderAudit(ctx context.Context, executor pgx.Tx, installationID int64, connectionID, action, actor string, detail map[string]any) error {
+	encoded, _ := json.Marshal(detail)
+	_, err := executor.Exec(ctx, `
+		INSERT INTO provider_connection_audit (id,installation_id,connection_id,action,actor,detail)
+		VALUES ($1,$2,NULLIF($3,'')::uuid,$4,$5,$6)`, uuid.NewString(), installationID,
+		connectionID, action, actor, json.RawMessage(encoded))
+	return err
 }
 
 func scanReviewRun(row pgx.Row) (contracts.ReviewRun, error) {

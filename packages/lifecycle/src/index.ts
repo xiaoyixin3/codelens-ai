@@ -21,6 +21,7 @@ export interface RepositoryDeletionResult {
   snapshots: number;
   projectRules: number;
   llmCalls: number;
+  repositoryRecords: number;
 }
 
 export interface LifecycleStore {
@@ -106,15 +107,19 @@ export class PostgresLifecycleStore implements LifecycleStore {
       const rules = await sql`
         DELETE FROM project_rules WHERE github_repository_id = ${repositoryId} RETURNING id
       `;
+      const repositoryRecords = await sql`
+        DELETE FROM github_repositories WHERE id = ${repositoryId} RETURNING id
+      `;
       const receiptId = randomUUID();
       const repositoryHash = createHash('sha256').update(`${repositoryId}:${receiptId}`).digest('hex');
       await sql`
         INSERT INTO data_deletion_audit (
           id, repository_hash, requested_by, review_runs_deleted,
-          snapshots_deleted, project_rules_deleted, llm_calls_deleted
+          snapshots_deleted, project_rules_deleted, llm_calls_deleted,
+          repository_records_deleted
         ) VALUES (
           ${receiptId}, ${repositoryHash}, ${requestedBy.slice(0, 200)}, ${runs.length},
-          ${snapshots.length}, ${rules.length}, ${calls.length}
+          ${snapshots.length}, ${rules.length}, ${calls.length}, ${repositoryRecords.length}
         )
       `;
       return {
@@ -122,7 +127,8 @@ export class PostgresLifecycleStore implements LifecycleStore {
         reviewRuns: runs.length,
         snapshots: snapshots.length,
         projectRules: rules.length,
-        llmCalls: calls.length
+        llmCalls: calls.length,
+        repositoryRecords: repositoryRecords.length
       };
     });
   }

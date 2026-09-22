@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/xiaoyixin3/codelens-ai/internal/contracts"
+	"github.com/xiaoyixin3/codelens-ai/internal/credentials"
 	"github.com/xiaoyixin3/codelens-ai/internal/security"
 	"github.com/xiaoyixin3/codelens-ai/internal/store"
 )
@@ -33,21 +34,39 @@ type Backend interface {
 	SaveFindingFeedback(context.Context, store.FindingFeedbackInput) (bool, error)
 }
 
+type ProviderBackend interface {
+	CreateProviderConnection(context.Context, store.CreateProviderConnectionInput) (store.ProviderConnection, error)
+	ListProviderConnections(context.Context, int64) ([]store.ProviderConnection, error)
+	GetProviderConnection(context.Context, int64, string) (store.ProviderConnection, error)
+	UpdateProviderConnection(context.Context, store.UpdateProviderConnectionInput) (store.ProviderConnection, error)
+	RotateProviderCredential(context.Context, int64, string, string, string, string, int) (store.ProviderConnection, error)
+	RecordProviderTest(context.Context, int64, string, string, string, string) (store.ProviderConnection, error)
+	DeleteProviderConnection(context.Context, int64, string, string) error
+}
+
 type Options struct {
-	Backend         Backend
-	WebhookSecret   string
-	GitHubAppID     string
-	RateLimitPerMin int
-	Logger          *slog.Logger
+	Backend            Backend
+	WebhookSecret      string
+	GitHubAppID        string
+	RateLimitPerMin    int
+	Logger             *slog.Logger
+	ProviderBackend    ProviderBackend
+	CredentialVault    *credentials.Vault
+	ModelAdminToken    string
+	AllowPrivateModels bool
 }
 
 type Server struct {
-	backend Backend
-	secret  string
-	appID   string
-	logger  *slog.Logger
-	limiter *fixedWindowLimiter
-	mux     *http.ServeMux
+	backend            Backend
+	secret             string
+	appID              string
+	logger             *slog.Logger
+	limiter            *fixedWindowLimiter
+	mux                *http.ServeMux
+	providers          ProviderBackend
+	vault              *credentials.Vault
+	adminToken         string
+	allowPrivateModels bool
 }
 
 func New(options Options) *Server {
@@ -58,10 +77,21 @@ func New(options Options) *Server {
 	server := &Server{
 		backend: options.Backend, secret: options.WebhookSecret, appID: options.GitHubAppID,
 		logger: logger, limiter: newFixedWindowLimiter(options.RateLimitPerMin), mux: http.NewServeMux(),
+		providers: options.ProviderBackend, vault: options.CredentialVault,
+		adminToken: options.ModelAdminToken, allowPrivateModels: options.AllowPrivateModels,
 	}
 	server.mux.HandleFunc("GET /healthz", server.health)
 	server.mux.HandleFunc("GET /readyz", server.ready)
 	server.mux.HandleFunc("POST /webhooks/github", server.webhook)
+	if server.providers != nil && server.vault != nil && server.adminToken != "" {
+		server.mux.HandleFunc("GET /api/v2/providers", server.listProviders)
+		server.mux.HandleFunc("POST /api/v2/providers", server.createProvider)
+		server.mux.HandleFunc("GET /api/v2/providers/{id}", server.getProvider)
+		server.mux.HandleFunc("PATCH /api/v2/providers/{id}", server.updateProvider)
+		server.mux.HandleFunc("POST /api/v2/providers/{id}/rotate-secret", server.rotateProviderSecret)
+		server.mux.HandleFunc("POST /api/v2/providers/{id}/test", server.testProvider)
+		server.mux.HandleFunc("DELETE /api/v2/providers/{id}", server.deleteProvider)
+	}
 	return server
 }
 

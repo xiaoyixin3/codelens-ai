@@ -47,6 +47,9 @@ The current milestone intentionally does not execute repository code or create f
 - Optional OpenAI-compatible structured-summary adapter with safe local fallback.
 - Deterministic security, concurrency, correctness, SQL, secret, and transaction-boundary rules.
 - Optional OpenAI-compatible risk reviewer; model failures safely degrade to deterministic review.
+- V2 model-provider control plane with encrypted credentials, installation scoping,
+  OpenAI-compatible/OpenAI Responses/Anthropic adapters, connection testing, secret
+  rotation, bounded retries, redacted errors, and mutation audit events.
 - Unified-diff hunk parsing with exact right-side line mapping.
 - Evidence verification that rejects context lines, missing lines, excerpt mismatches, duplicates, and low-confidence candidates.
 - Stable finding fingerprints, severity thresholds, a configurable annotation cap, and complete finding/evidence audit records.
@@ -159,6 +162,12 @@ The current provider integration is the V1 deployment-level foundation. The V2
 proposal adds user-managed provider connections, per-repository routing, encrypted
 credentials, budgets, usage visibility, and a setup console. See
 [CodeLens AI V2: LLM provider platform](docs/v2-llm-provider-platform.md).
+
+Milestone A is implemented. Operators can manage and test provider connections
+through protected API endpoints without restarting the service. See
+[Model provider control plane](docs/model-provider-control-plane.md). Repository
+routing remains Milestone B; the current worker continues using the deployment-level
+environment variables below until that routing step is complete.
 
 Without LLM settings, the worker generates a deterministic summary from changed-file metadata. This is useful for local development and safe degradation.
 

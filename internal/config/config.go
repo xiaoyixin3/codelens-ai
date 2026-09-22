@@ -70,6 +70,9 @@ type Config struct {
 	LLMFallbackModel    string
 	LLMMaxCallsPerRun   int
 	LLMMaxInputChars    int
+	ModelAdminToken     string
+	CredentialKey       string
+	AllowPrivateModels  bool
 }
 
 func Load() (Config, error) {
@@ -94,6 +97,9 @@ func Load() (Config, error) {
 		LLMFallbackModel:    strings.TrimSpace(os.Getenv("LLM_FALLBACK_MODEL")),
 		LLMMaxCallsPerRun:   envInt("LLM_MAX_CALLS_PER_RUN", 4),
 		LLMMaxInputChars:    envInt("LLM_MAX_INPUT_CHARS_PER_RUN", 250000),
+		ModelAdminToken:     strings.TrimSpace(os.Getenv("CODELENS_MODEL_ADMIN_TOKEN")),
+		CredentialKey:       strings.TrimSpace(os.Getenv("CODELENS_CREDENTIAL_KEY")),
+		AllowPrivateModels:  envBool("CODELENS_ALLOW_PRIVATE_MODEL_ENDPOINTS", false),
 	}
 
 	if cfg.Port < 1 || cfg.Port > 65535 {
@@ -114,6 +120,12 @@ func Load() (Config, error) {
 	if (cfg.LLMFallbackBaseURL == "") != (cfg.LLMFallbackAPIKey == "") || (cfg.LLMFallbackBaseURL == "") != (cfg.LLMFallbackModel == "") {
 		return Config{}, errors.New("LLM_FALLBACK_BASE_URL, LLM_FALLBACK_API_KEY, and LLM_FALLBACK_MODEL must be configured together")
 	}
+	if (cfg.ModelAdminToken == "") != (cfg.CredentialKey == "") {
+		return Config{}, errors.New("CODELENS_MODEL_ADMIN_TOKEN and CODELENS_CREDENTIAL_KEY must be configured together")
+	}
+	if cfg.ModelAdminToken != "" && len(cfg.ModelAdminToken) < 32 {
+		return Config{}, errors.New("CODELENS_MODEL_ADMIN_TOKEN must contain at least 32 characters")
+	}
 	return cfg, nil
 }
 
@@ -132,6 +144,18 @@ func envInt(name string, fallback int) int {
 		return fallback
 	}
 	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func envBool(name string, fallback bool) bool {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(value)
 	if err != nil {
 		return fallback
 	}
