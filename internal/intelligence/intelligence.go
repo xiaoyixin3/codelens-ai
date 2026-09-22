@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -18,7 +17,7 @@ import (
 	"github.com/xiaoyixin3/codelens-ai/internal/security"
 )
 
-const ParserVersion = "go-native-multilang-v1"
+const ParserVersion = "go-native-multilang-v2"
 
 type Reader interface {
 	GetFileContent(context.Context, int64, string, string, string, string) (string, error)
@@ -198,63 +197,6 @@ func (a *Analyzer) indexSide(ctx context.Context, job contracts.ReviewJob, files
 	return snapshot
 }
 
-var (
-	goFunction    = regexp.MustCompile(`^\s*func\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)\s*\(`)
-	goType        = regexp.MustCompile(`^\s*type\s+([A-Za-z_]\w*)\s+(?:struct|interface)\b`)
-	tsDeclaration = regexp.MustCompile(`^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(class|interface|type|enum|function)\s+([A-Za-z_$][\w$]*)`)
-	tsVariable    = regexp.MustCompile(`^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>`)
-	callPattern   = regexp.MustCompile(`\b([A-Za-z_$][\w$]*)\s*\(`)
-)
-
-func parse(path, language, content string) ([]Symbol, []Edge) {
-	lines := strings.Split(content, "\n")
-	moduleKey := language + ":" + path + ":file:$module"
-	symbols := []Symbol{{StableKey: moduleKey, Path: path, Kind: "file", Name: filepath.Base(path), QualifiedName: "$module", StartLine: 1, EndLine: max(1, len(lines)), Signature: path, ContentHash: digest([]byte(content)), Exported: true, Metadata: map[string]any{"language": language}}}
-	declarations := map[string]string{}
-	for index, line := range lines {
-		kind, name, exported := "", "", false
-		if language == "go" {
-			if match := goFunction.FindStringSubmatch(line); match != nil {
-				kind, name = "function", match[1]
-				exported = name != "" && name[0] >= 'A' && name[0] <= 'Z'
-			} else if match := goType.FindStringSubmatch(line); match != nil {
-				kind, name = "type", match[1]
-				exported = name != "" && name[0] >= 'A' && name[0] <= 'Z'
-			}
-		} else if match := tsDeclaration.FindStringSubmatch(line); match != nil {
-			kind, name, exported = match[1], match[2], strings.Contains(line, "export")
-		} else if match := tsVariable.FindStringSubmatch(line); match != nil {
-			kind, name, exported = "function", match[1], strings.Contains(line, "export")
-		}
-		if name == "" {
-			continue
-		}
-		end := blockEnd(lines, index)
-		body := strings.Join(lines[index:end], "\n")
-		stable := fmt.Sprintf("%s:%s:%s:%s", language, path, kind, name)
-		symbols = append(symbols, Symbol{StableKey: stable, Path: path, Kind: kind, Name: name, QualifiedName: name, StartLine: index + 1, EndLine: end, Signature: strings.TrimSpace(line), ContentHash: digest([]byte(body)), Exported: exported, Metadata: map[string]any{}})
-		declarations[name] = stable
-	}
-	edges := make([]Edge, 0)
-	for _, symbol := range symbols[1:] {
-		for lineIndex := symbol.StartLine - 1; lineIndex < symbol.EndLine && lineIndex < len(lines); lineIndex++ {
-			for _, match := range callPattern.FindAllStringSubmatch(lines[lineIndex], -1) {
-				name := match[1]
-				if name == symbol.Name || controlWord(name) {
-					continue
-				}
-				target := declarations[name]
-				confidence := .9
-				if target == "" {
-					target, confidence = "unresolved:"+name, .4
-				}
-				edges = append(edges, Edge{FromStableKey: symbol.StableKey, ToStableKey: target, Type: "CALLS", Confidence: confidence, SourcePath: path, SourceLine: lineIndex + 1})
-			}
-		}
-	}
-	return uniqueSymbols(symbols), uniqueEdges(edges)
-}
-
 func resolveEdges(snapshot *Snapshot) {
 	byName := map[string][]Symbol{}
 	for _, symbol := range snapshot.Symbols {
@@ -387,19 +329,6 @@ func summarize(changes []Change, paths []Path, base, head Snapshot, maxDepth int
 	return contracts.ImpactSummary{Level: level, Score: score, ChangedSymbols: len(changes), ImpactedSymbols: len(impacted), TopPaths: top, CoverageWarning: fmt.Sprintf("Impact paths are limited to %d changed-file snapshot(s) and depth %d; unchanged callers are not indexed yet.", head.Coverage.IndexedFiles, maxDepth)}
 }
 
-func supportedLanguage(path string) (string, bool) {
-	extension := strings.ToLower(filepath.Ext(path))
-	switch extension {
-	case ".go":
-		return "go", true
-	case ".ts", ".tsx", ".mts", ".cts":
-		return "typescript", true
-	case ".js", ".jsx", ".mjs", ".cjs":
-		return "javascript", true
-	default:
-		return "", false
-	}
-}
 func safePath(path string) bool {
 	return path != "" && !strings.HasPrefix(path, "/") && !strings.Contains(path, "../") && !strings.Contains(path, `\`) && !strings.ContainsRune(path, '\x00') && !regexp.MustCompile(`^[A-Za-z]:`).MatchString(path)
 }
@@ -415,6 +344,15 @@ func symbolMap(symbols []Symbol) map[string]Symbol {
 func blockEnd(lines []string, start int) int {
 	depth, opened := 0, false
 	for index := start; index < len(lines); index++ {
+		if !opened && index > start+20 {
+			return start + 1
+		}
+		if !opened && strings.Contains(lines[index], ";") {
+			return index + 1
+		}
+		if !opened && index == start && strings.Contains(lines[index], "=") && !strings.Contains(lines[index], "{") {
+			return start + 1
+		}
 		depth += strings.Count(lines[index], "{") - strings.Count(lines[index], "}")
 		if strings.Contains(lines[index], "{") {
 			opened = true
@@ -423,11 +361,14 @@ func blockEnd(lines []string, start int) int {
 			return index + 1
 		}
 	}
+	if !opened {
+		return start + 1
+	}
 	return min(len(lines), start+200)
 }
 func controlWord(value string) bool {
 	switch value {
-	case "if", "for", "switch", "select", "catch", "while", "func", "function", "return":
+	case "if", "for", "switch", "select", "catch", "while", "until", "unless", "when", "with", "match", "func", "function", "fn", "def", "class", "interface", "struct", "enum", "trait", "impl", "return", "new", "delete", "sizeof", "typeof", "super", "this":
 		return true
 	}
 	return false

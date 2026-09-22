@@ -10,10 +10,26 @@ review:
     medium: 0.80
 
 include:
-  - "src/**/*.{ts,tsx,js,jsx}"
+  - "src/**/*.go"
+  - "src/**/*.java"
+  - "src/**/*.kt"
+  - "src/**/*.py"
+  - "src/**/*.ts"
+  - "src/**/*.tsx"
+  - "src/**/*.js"
+  - "src/**/*.jsx"
+  - "src/**/*.cs"
+  - "src/**/*.c"
+  - "src/**/*.cpp"
+  - "src/**/*.h"
+  - "src/**/*.hpp"
+  - "src/**/*.rs"
+  - "src/**/*.php"
+  - "src/**/*.rb"
+  - "src/**/*.swift"
 
 exclude:
-  - "**/*.generated.ts"
+  - "**/*.generated.*"
   - "**/dist/**"
   - "**/vendor/**"
 

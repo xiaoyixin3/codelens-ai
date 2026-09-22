@@ -32,8 +32,10 @@ The current milestone intentionally does not execute repository code or create f
 - PostgreSQL durable queue with leases, three attempts, exponential backoff, and run-level deduplication.
 - GitHub App installation authentication implemented in Go with short-lived installation tokens.
 - PR metadata and changed-file retrieval.
-- Go-native symbol indexing for changed Go, TypeScript, and JavaScript files.
-- Stable symbols for files, functions, Go types, classes, interfaces, aliases, and enums.
+- Go-native bounded symbol indexing for changed Go, Java, Kotlin, Python,
+  TypeScript, JavaScript, C#, C, C++, Rust, PHP, Ruby, and Swift files.
+- Stable symbols for files, functions, methods, types, classes, interfaces,
+  structs, protocols, traits, modules, aliases, and enums.
 - `CALLS` relationships with line-level evidence and confidence; unresolved dynamic calls remain explicit.
 - Commit-addressed delta snapshots with content hashes, parser versions, coverage, skip reasons, and safe reuse.
 - Base/head matching for `ADDED`, `MODIFIED`, and `DELETED` symbols.
@@ -152,6 +154,11 @@ tunnel, use `npm run beta:local`. See [INSTALLATION.md](INSTALLATION.md) for the
 runtime requirements and limitations.
 
 ## Structured summary providers
+
+The current provider integration is the V1 deployment-level foundation. The V2
+proposal adds user-managed provider connections, per-repository routing, encrypted
+credentials, budgets, usage visibility, and a setup console. See
+[CodeLens AI V2: LLM provider platform](docs/v2-llm-provider-platform.md).
 
 Without LLM settings, the worker generates a deterministic summary from changed-file metadata. This is useful for local development and safe degradation.
 
@@ -291,7 +298,11 @@ The default lifecycle keeps terminal reviews and model telemetry for 90 days and
 
 - The index is a PR delta, so callers in unchanged files are not visible yet; every output carries this warning.
 - Calls resolved within the same file or through direct imports have stronger confidence; dynamic calls remain explicit `unresolved:` targets.
-- The Go-native indexer deliberately uses a bounded declaration/call parser rather than a full compiler; methods, dynamic dispatch, and cross-file imports may remain unresolved.
+- The Go-native multi-language indexer deliberately uses bounded declaration and
+  direct-call parsers rather than full compilers. It recognizes common declarations,
+  nested type/method scopes, and uniquely resolvable calls, while overload dispatch,
+  reflection, generated code, macros, Ruby calls without parentheses, and dynamic
+  cross-file imports may remain unresolved.
 - Full compiler or Tree-sitter adapters and full-repository indexing remain post-beta improvements.
 - Token telemetry depends on the provider returning a compatible `usage` object; monetary cost is not calculated yet.
 - The production image and dependency-gated startup are exercised in CI; the current local beta endpoint still uses a temporary tunnel rather than a fixed production domain.
