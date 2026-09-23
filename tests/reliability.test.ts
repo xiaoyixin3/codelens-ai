@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runBenchmark } from '@codelens/evaluation';
+import { DiffMap } from '@codelens/risk-review';
 import { retentionCutoffs } from '@codelens/lifecycle';
 import {
   callCompatibleChat,
@@ -113,6 +114,24 @@ describe('data lifecycle', () => {
 });
 
 describe('historical replay', () => {
+  it('reverses a unified patch while preserving exact right-side line numbers', async () => {
+    const { reverseUnifiedPatch } = await import('@codelens/evaluation');
+    const reversed = reverseUnifiedPatch([
+      '@@ -10,3 +10,4 @@ func load() {',
+      ' keep()',
+      '-buggy()',
+      '+fixed()',
+      '+verify()',
+      ' done()'
+    ].join('\n'));
+
+    expect(reversed).toContain('@@ -10,4 +10,3 @@ func load() {');
+    expect(reversed).toContain('+buggy()');
+    expect(reversed).toContain('-fixed()');
+    const lines = new DiffMap([{ path: 'service.go', status: 'modified', additions: 1, deletions: 2, patch: reversed }]).addedLines();
+    expect(lines).toEqual([expect.objectContaining({ rightLine: 11, content: 'buggy()' })]);
+  });
+
   it('reports precision, recall, latency, and insufficient sample size', async () => {
     const report = await runBenchmark([{
       id: 'async-foreach',

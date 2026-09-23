@@ -65,6 +65,17 @@ export function isApprovedHistoricalReplayCase(item: ReplayCase): boolean {
   return item.approval.status === 'approved' && item.provenance.kind === 'historical_pr';
 }
 
+export function reverseUnifiedPatch(patch: string): string {
+  return patch.split('\n').map((line) => {
+    const hunk = line.match(/^@@ -(\d+(?:,\d+)?) \+(\d+(?:,\d+)?) @@(.*)$/);
+    if (hunk) return `@@ -${hunk[2]} +${hunk[1]} @@${hunk[3]}`;
+    if (line.startsWith('+++') || line.startsWith('---')) return line;
+    if (line.startsWith('+')) return `-${line.slice(1)}`;
+    if (line.startsWith('-')) return `+${line.slice(1)}`;
+    return line;
+  }).join('\n');
+}
+
 export interface BenchmarkReport {
   cases: number;
   positiveCases: number;
