@@ -254,7 +254,7 @@ func (e *Engine) Fail(ctx context.Context, job contracts.ReviewJob, detail strin
 
 var (
 	highRiskPath = regexp.MustCompile(`(?i)(^|/)(auth|payment|billing|security|migration|database|permission)(/|\.|$)`)
-	testPath     = regexp.MustCompile(`(?i)(^|/)(__tests__|test|tests|spec)(/|\.|$)|(^|/)[^/]*\.(test|spec)\.[jt]sx?$`)
+	testPath     = regexp.MustCompile(`(?i)(^|/)(__tests__|test|tests|spec)(/|\.|$)|(^|/)([^/]*\.(test|spec)\.[jt]sx?|[^/]*_test\.go)$`)
 )
 
 func Summarize(pull githubapp.PullRequest, maxFiles int) contracts.ChangeSummary {
@@ -279,7 +279,7 @@ func SummarizeWithLanguage(pull githubapp.PullRequest, maxFiles int, language st
 		if testPath.MatchString(file.Path) {
 			hasTests = true
 		}
-		if regexp.MustCompile(`\.[jt]sx?$`).MatchString(file.Path) {
+		if regexp.MustCompile(`(?i)\.(?:[jt]sx?|go|java|kt|kts|py|rb|php|cs|c|cc|cpp|h|hpp|rs|swift)$`).MatchString(file.Path) {
 			sourceFiles = true
 		}
 		if len(resultFiles) < 12 {
@@ -354,11 +354,25 @@ var rules = []rule{
 	makeRule("correctness/no-empty-catch", `\bcatch\s*(\([^)]*\))?\s*\{\s*\}`, "correctness", "medium", .94, "Exception is silently swallowed", "This empty catch block hides failures and can leave the operation in an unknown state.", "Handle the expected error explicitly or rethrow it with useful context.", "Exercise the failing branch and assert the caller receives or records the failure."),
 }
 
+var goRules = []rule{
+	makeRule("go/security/insecure-tls", `\bInsecureSkipVerify\s*:\s*true\b`, "security", "critical", .99, "TLS certificate verification disabled", "This TLS configuration accepts certificates without verifying their chain or hostname, enabling man-in-the-middle attacks.", "Remove InsecureSkipVerify and configure trusted roots or explicit certificate pinning.", "Connect through an untrusted certificate and confirm the client rejects the connection."),
+	makeRule("go/security/world-writable-permission", `\b(os\.)?(Chmod|Mkdir|MkdirAll|OpenFile|WriteFile)\s*\([^\n]*,\s*0?(666|777)\s*\)`, "security", "high", .96, "World-writable file permission", "This operation creates or changes a filesystem object so every local user can modify it.", "Use the minimum required permission, normally 0600 for sensitive files or 0750/0755 for directories.", "Inspect the resulting mode after applying the process umask and verify untrusted users cannot write it."),
+	makeRule("go/correctness/discarded-context-cancel", `,\s*_\s*:?=\s*context\.With(Cancel|Timeout|Deadline)\s*\(`, "correctness", "high", .98, "Context cancel function discarded", "Discarding the cancel function can retain timers, child contexts, and related resources until the parent ends.", "Keep the returned cancel function and call it with defer as soon as the context is created.", "Exercise repeated calls and confirm timers and goroutines are released promptly."),
+	makeRule("go/performance/default-http-client-no-timeout", `\bhttp\.(Get|Post|PostForm)\s*\(`, "performance", "medium", .90, "HTTP request has no client timeout", "The package-level HTTP helper uses the default client without a total timeout, so a stalled peer can hold this operation indefinitely.", "Use an http.Client with an explicit Timeout and a request carrying a bounded context.", "Test against a server that accepts the connection but never responds and assert the request terminates within the budget."),
+	makeRule("go/security/formatted-sql", `\b(Query|QueryRow|Exec|Raw)\w*\s*\(\s*fmt\.Sprintf\s*\(`, "security", "high", .95, "SQL built with fmt.Sprintf", "Formatting values directly into a SQL statement can turn untrusted input into executable SQL.", "Pass dynamic values through the driver parameter-binding API and keep the query text static.", "Trace every formatted value and add an injection-focused test at the database boundary."),
+	makeRule("go/security/dynamic-shell-command", `(?i)\bexec\.Command(Context)?\s*\([^\n]*("(sh|bash|cmd|powershell)(\.exe)?"|'(sh|bash|cmd|powershell)(\.exe)?')[^\n]*("-c"|'/c'|"/c")[^\n]*(fmt\.Sprintf|\+|args?\b)`, "security", "critical", .95, "Dynamic command passed through a shell", "A dynamically constructed command is executed by a shell, so metacharacters in external input can change the command being run.", "Invoke the target executable directly and pass each argument separately after validation.", "Test shell metacharacters in every dynamic value and confirm they are treated only as data."),
+	makeRule("go/correctness/ignored-decode-error", `^\s*(json|xml|yaml)\.Unmarshal\s*\(`, "correctness", "high", .93, "Decode error is ignored", "The decoder result is discarded, so malformed input can leave a partially populated value in use.", "Check and return or handle the decode error before using the destination value.", "Pass malformed input and assert the operation fails without using partial data."),
+	makeRule("go/correctness/ignored-server-error", `^\s*http\.(ListenAndServe|ListenAndServeTLS|Serve)\s*\(`, "correctness", "medium", .91, "HTTP server failure is ignored", "The server start or serve error is discarded, so bind failures and unexpected shutdowns can leave the process appearing healthy.", "Check the returned error and propagate or log it, while treating http.ErrServerClosed as the expected shutdown case.", "Start a second server on the same address and assert the process reports the bind failure."),
+}
+
 var (
 	secretLine       = regexp.MustCompile(`(?i)\b(password|passwd|api[_-]?key|secret|access[_-]?token)\b\s*[:=]\s*['"][^'"]{8,}['"]`)
 	sqlInterpolation = regexp.MustCompile("(?i)\\b(query|execute|raw)\\s*\\(\\s*`[^`]*\\$\\{")
 	remoteCall       = regexp.MustCompile(`(?i)\b(fetch|axios\.(get|post|put|patch|delete)|http\.(get|request))\s*\(`)
 	transaction      = regexp.MustCompile(`(?i)\b(transaction|beginTransaction|@Transactional)\b`)
+	bodyClose        = regexp.MustCompile(`\bdefer\s+([A-Za-z_]\w*)\.Body\.Close\s*\(\s*\)`)
+	resourceClose    = regexp.MustCompile(`\bdefer\s+([A-Za-z_]\w*)\.Close\s*\(\s*\)`)
+	errorGuard       = regexp.MustCompile(`\bif\s+err\s*!=\s*nil\b`)
 )
 
 func makeRule(id, pattern, category, severity string, confidence float64, title, claim, suggestion, verification string) rule {
@@ -368,10 +382,12 @@ func makeRule(id, pattern, category, severity string, confidence float64, title,
 type diffLine struct {
 	path, content string
 	line          int
+	added         bool
 }
 
 func ReviewRisk(pull githubapp.PullRequest, maxPatchChars, maxComments int) []contracts.Finding {
 	lines := []diffLine{}
+	rightLines := []diffLine{}
 	remaining := maxPatchChars
 	for _, file := range pull.Files {
 		if remaining <= 0 {
@@ -382,7 +398,13 @@ func ReviewRisk(pull githubapp.PullRequest, maxPatchChars, maxComments int) []co
 			patch = patch[:remaining]
 		}
 		remaining -= len(patch)
-		lines = append(lines, parseAddedLines(file.Path, patch)...)
+		parsed := parseRightLines(file.Path, patch)
+		rightLines = append(rightLines, parsed...)
+		for _, line := range parsed {
+			if line.added {
+				lines = append(lines, line)
+			}
+		}
 	}
 	findings := []contracts.Finding{}
 	for _, line := range lines {
@@ -391,11 +413,76 @@ func ReviewRisk(pull githubapp.PullRequest, maxPatchChars, maxComments int) []co
 				findings = append(findings, findingFromRule(candidate, line))
 			}
 		}
+		if strings.HasSuffix(strings.ToLower(line.path), ".go") && !testPath.MatchString(line.path) {
+			for _, candidate := range goRules {
+				if candidate.compiled.MatchString(line.content) {
+					findings = append(findings, findingFromRule(candidate, line))
+				}
+			}
+		}
 		if !testPath.MatchString(line.path) && secretLine.MatchString(line.content) {
 			findings = append(findings, findingFromRule(makeRule("security/no-hardcoded-secret", ".", "security", "critical", .93, "Possible hardcoded secret", "This added line appears to embed a credential in source code.", "Load the secret from the deployment secret store and rotate the exposed value.", "Confirm whether the value is live, then inspect repository history and rotate it if necessary."), line))
 		}
 		if sqlInterpolation.MatchString(line.content) {
 			findings = append(findings, findingFromRule(makeRule("security/no-interpolated-sql", ".", "security", "high", .91, "Interpolated SQL query", "A template expression is inserted into a SQL execution call and may bypass parameterization.", "Use the database client parameter binding API for every dynamic value.", "Trace each interpolated value and run an injection-focused test against the query boundary."), line))
+		}
+	}
+	for _, line := range lines {
+		if !strings.HasSuffix(strings.ToLower(line.path), ".go") || testPath.MatchString(line.path) {
+			continue
+		}
+		match := bodyClose.FindStringSubmatch(line.content)
+		if match == nil {
+			continue
+		}
+		variable := regexp.QuoteMeta(match[1])
+		assignment := regexp.MustCompile(`\b` + variable + `\s*,\s*err\s*:?=`)
+		assignmentLine := 0
+		guarded := false
+		for _, nearby := range rightLines {
+			if nearby.path != line.path || nearby.line >= line.line || nearby.line < line.line-6 {
+				continue
+			}
+			if assignment.MatchString(nearby.content) {
+				assignmentLine = nearby.line
+				guarded = false
+				continue
+			}
+			if assignmentLine > 0 && nearby.line > assignmentLine && errorGuard.MatchString(nearby.content) {
+				guarded = true
+			}
+		}
+		if assignmentLine > 0 && !guarded {
+			findings = append(findings, findingFromRule(makeRule("go/correctness/response-close-before-error-check", ".", "correctness", "high", .97, "Response body closed before checking request error", "If the request fails, the response can be nil and this deferred Body.Close call will panic.", "Check err immediately after the request and only defer Body.Close after confirming the response is non-nil.", "Force the request to fail before receiving a response and confirm the function returns the error without panicking."), line))
+		}
+	}
+	for _, line := range lines {
+		if !strings.HasSuffix(strings.ToLower(line.path), ".go") || testPath.MatchString(line.path) || strings.Contains(line.content, ".Body.Close") {
+			continue
+		}
+		match := resourceClose.FindStringSubmatch(line.content)
+		if match == nil {
+			continue
+		}
+		variable := regexp.QuoteMeta(match[1])
+		assignment := regexp.MustCompile(`\b` + variable + `\s*,\s*err\s*:?=`)
+		assignmentLine := 0
+		guarded := false
+		for _, nearby := range rightLines {
+			if nearby.path != line.path || nearby.line >= line.line || nearby.line < line.line-6 {
+				continue
+			}
+			if assignment.MatchString(nearby.content) {
+				assignmentLine = nearby.line
+				guarded = false
+				continue
+			}
+			if assignmentLine > 0 && nearby.line > assignmentLine && errorGuard.MatchString(nearby.content) {
+				guarded = true
+			}
+		}
+		if assignmentLine > 0 && !guarded {
+			findings = append(findings, findingFromRule(makeRule("go/correctness/resource-close-before-error-check", ".", "correctness", "high", .96, "Resource closed before checking open error", "If resource creation fails, this deferred Close call can dereference a nil resource and panic.", "Check err immediately after opening the resource and only defer Close after confirming it is valid.", "Force resource creation to fail and confirm the function returns the error without panicking."), line))
 		}
 	}
 	for _, line := range lines {
@@ -417,6 +504,17 @@ func ReviewRisk(pull githubapp.PullRequest, maxPatchChars, maxComments int) []co
 }
 
 func parseAddedLines(path, patch string) []diffLine {
+	all := parseRightLines(path, patch)
+	result := make([]diffLine, 0, len(all))
+	for _, line := range all {
+		if line.added {
+			result = append(result, line)
+		}
+	}
+	return result
+}
+
+func parseRightLines(path, patch string) []diffLine {
 	hunk := regexp.MustCompile(`^@@ -\d+(,\d+)? \+(\d+)(,\d+)? @@`)
 	right, active := 0, false
 	result := []diffLine{}
@@ -430,9 +528,10 @@ func parseAddedLines(path, patch string) []diffLine {
 			continue
 		}
 		if strings.HasPrefix(raw, "+") && !strings.HasPrefix(raw, "+++") {
-			result = append(result, diffLine{path: path, content: strings.TrimPrefix(raw, "+"), line: right})
+			result = append(result, diffLine{path: path, content: strings.TrimPrefix(raw, "+"), line: right, added: true})
 			right++
 		} else if strings.HasPrefix(raw, " ") {
+			result = append(result, diffLine{path: path, content: strings.TrimPrefix(raw, " "), line: right})
 			right++
 		}
 	}

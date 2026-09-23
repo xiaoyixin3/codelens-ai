@@ -74,8 +74,8 @@ export interface BenchmarkReport {
   truePositive: number;
   falsePositive: number;
   falseNegative: number;
-  precision: number;
-  recall: number;
+  precision: number | null;
+  recall: number | null;
   latencyMs: { p50: number; p95: number; max: number };
   confidence95?: {
     precision: { lower: number; upper: number };
@@ -87,8 +87,8 @@ export interface BenchmarkReport {
     truePositive: number;
     falsePositive: number;
     falseNegative: number;
-    precision: number;
-    recall: number;
+    precision: number | null;
+    recall: number | null;
   }>;
   falsePositives?: BenchmarkMismatch[];
   falseNegatives?: BenchmarkMismatch[];
@@ -217,10 +217,14 @@ export function evaluateBenchmarkGate(
   if (report.negativeCases < thresholds.minNegativeCases) {
     failures.push(`negative cases ${report.negativeCases} < ${thresholds.minNegativeCases}`);
   }
-  if (report.precision < thresholds.minPrecision) {
+  if (report.precision === null) {
+    failures.push('precision unavailable: no predicted findings');
+  } else if (report.precision < thresholds.minPrecision) {
     failures.push(`precision ${report.precision.toFixed(4)} < ${thresholds.minPrecision.toFixed(4)}`);
   }
-  if (report.recall < thresholds.minRecall) {
+  if (report.recall === null) {
+    failures.push('recall unavailable: no expected findings');
+  } else if (report.recall < thresholds.minRecall) {
     failures.push(`recall ${report.recall.toFixed(4)} < ${thresholds.minRecall.toFixed(4)}`);
   }
   if (report.latencyMs.p95 > thresholds.maxP95LatencyMs) {
@@ -319,8 +323,8 @@ export async function runBenchmark(cases: ReplayCase[]): Promise<BenchmarkReport
       ...counts,
       falsePositive,
       falseNegative,
-      precision: counts.predicted ? counts.truePositive / counts.predicted : counts.expected ? 0 : 1,
-      recall: counts.expected ? counts.truePositive / counts.expected : 1
+      precision: counts.predicted ? counts.truePositive / counts.predicted : null,
+      recall: counts.expected ? counts.truePositive / counts.expected : null
     }];
   }));
   return {
@@ -332,8 +336,8 @@ export async function runBenchmark(cases: ReplayCase[]): Promise<BenchmarkReport
     truePositive,
     falsePositive,
     falseNegative,
-    precision: predicted ? truePositive / predicted : expected ? 0 : 1,
-    recall: expected ? truePositive / expected : 1,
+    precision: predicted ? truePositive / predicted : null,
+    recall: expected ? truePositive / expected : null,
     latencyMs: {
       p50: Number(percentile(sorted, 0.5).toFixed(2)),
       p95: Number(percentile(sorted, 0.95).toFixed(2)),

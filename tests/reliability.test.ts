@@ -169,6 +169,25 @@ describe('historical replay', () => {
     })]);
   });
 
+  it('does not report fake perfect metrics when no findings exist', async () => {
+    const report = await runBenchmark([{
+      id: 'clean-go-change',
+      context: {
+        owner: 'sample', repo: 'replay', number: 3, title: 'Clean Go change', body: '',
+        baseSha: 'eeeeeee', headSha: 'fffffff',
+        files: [{
+          path: 'service.go', status: 'modified', additions: 1, deletions: 1,
+          patch: '@@ -1,1 +1,1 @@\n-return oldValue\n+return newValue'
+        }]
+      },
+      expectedFindings: [],
+      approval: { status: 'approved', approvedBy: 'blind-reviewer', approvedAt: '2026-09-22T00:00:00.000Z' },
+      provenance: { kind: 'fixture' }
+    }]);
+
+    expect(report).toMatchObject({ expected: 0, predicted: 0, precision: null, recall: null });
+  });
+
   it('enforces sample, quality, and latency release thresholds', async () => {
     const { evaluateBenchmarkGate } = await import('@codelens/evaluation');
     const result = evaluateBenchmarkGate({

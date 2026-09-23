@@ -2,9 +2,11 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/xiaoyixin3/codelens-ai/internal/githubapp"
@@ -51,5 +53,37 @@ func TestRiskFindingsRequireExactAddedLine(t *testing.T) {
 	}
 	if len(findings) != 1 || findings[0].Path != "service.go" || findings[0].Line != 2 {
 		t.Fatalf("unexpected findings: %#v", findings)
+	}
+}
+
+func TestRiskReviewAddsGoSpecificGuidance(t *testing.T) {
+	var systemPrompt string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		for _, message := range request.Messages {
+			if message.Role == "system" {
+				systemPrompt = message.Content
+			}
+		}
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"{\"findings\":[]}"}}]}`)
+	}))
+	defer server.Close()
+	client := New([]Provider{{Name: "test", BaseURL: server.URL, APIKey: "secret", Model: "model"}}, nil, 4, 100000)
+	pull := githubapp.PullRequest{Files: []githubapp.ChangedFile{{Path: "service.go", Patch: "@@ -0,0 +1 @@\n+return nil"}}}
+	if _, err := client.ReviewRisk(context.Background(), "go-prompt", pull, policy.Policy{Language: "en"}, 10, 1000); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"context cancellation", "goroutine", "unsafe map access", "TLS validation", "defer placement"} {
+		if !strings.Contains(systemPrompt, expected) {
+			t.Fatalf("Go review prompt missing %q: %s", expected, systemPrompt)
+		}
 	}
 }

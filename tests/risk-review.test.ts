@@ -98,6 +98,63 @@ describe('DeterministicRiskReviewer', () => {
     );
     expect(candidates.some((item) => item.ruleId === 'security/no-hardcoded-secret')).toBe(false);
   });
+
+  it('detects high-value Go security, lifecycle, timeout, and nil-response risks', async () => {
+    const goContext: PullRequestContext = {
+      ...context,
+      files: [{
+        path: 'internal/client/client.go', status: 'modified', additions: 12, deletions: 0,
+        patch: [
+          '@@ -10,0 +10,12 @@',
+          '+tlsConfig := &tls.Config{InsecureSkipVerify: true}',
+          '+ctx, _ := context.WithCancel(parent)',
+          '+resp, err := http.Get(endpoint)',
+          '+defer resp.Body.Close()',
+          '+_ = os.WriteFile(path, payload, 0777)',
+          '+rows, err := db.Query(fmt.Sprintf("SELECT * FROM users WHERE name = \'%s\'", name))',
+          '+cmd := exec.Command("sh", "-c", "echo "+input)',
+          '+json.Unmarshal(payload, &target)',
+          '+http.ListenAndServe(":8080", handler)',
+          '+file, err := os.Open(path)',
+          '+defer file.Close()',
+          '+return nil'
+        ].join('\n')
+      }]
+    };
+    const candidates = await new DeterministicRiskReviewer().review(goContext, new DiffMap(goContext.files));
+
+    expect(candidates.map((item) => item.ruleId)).toEqual(expect.arrayContaining([
+      'go/security/insecure-tls',
+      'go/security/world-writable-permission',
+      'go/correctness/discarded-context-cancel',
+      'go/performance/default-http-client-no-timeout',
+      'go/correctness/response-close-before-error-check',
+      'go/security/formatted-sql',
+      'go/security/dynamic-shell-command',
+      'go/correctness/ignored-decode-error',
+      'go/correctness/ignored-server-error',
+      'go/correctness/resource-close-before-error-check'
+    ]));
+  });
+
+  it('does not apply Go production rules to _test.go or a guarded response close', async () => {
+    const safeGoContext: PullRequestContext = {
+      ...context,
+      files: [
+        {
+          path: 'internal/client/client_test.go', status: 'modified', additions: 1, deletions: 0,
+          patch: '@@ -2,0 +2 @@\n+tlsConfig := &tls.Config{InsecureSkipVerify: true}'
+        },
+        {
+          path: 'internal/client/client.go', status: 'modified', additions: 4, deletions: 0,
+          patch: '@@ -20,0 +20,4 @@\n+resp, err := client.Do(req)\n+if err != nil { return err }\n+defer resp.Body.Close()\n+return nil'
+        }
+      ]
+    };
+    const candidates = await new DeterministicRiskReviewer().review(safeGoContext, new DiffMap(safeGoContext.files));
+
+    expect(candidates.filter((item) => item.ruleId?.startsWith('go/'))).toEqual([]);
+  });
 });
 
 describe('EvidenceVerifier', () => {
