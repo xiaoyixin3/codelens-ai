@@ -217,7 +217,9 @@ npm test
 npm run build
 npm run benchmark
 npm run benchmark:collect -- --target=120
+npm run benchmark:collect:go
 npm run benchmark:label
+npm run benchmark:label:go
 npm run benchmark:gate -- benchmarks/candidates/blind-approved-replay.jsonl
 npm run beta:readiness
 npm run github:preflight
@@ -236,6 +238,10 @@ labels, and the report includes 95% confidence intervals plus explicit misses
 and extra predictions. The former machine-assisted 100-case set is retained
 only as a deterministic regression suite and is not evidence of real-world
 precision or recall.
+
+For a Go-only evaluation, `benchmark:collect:go` creates an isolated 100-PR
+queue and `benchmark:label:go` uses separate decisions and export files. The
+existing JavaScript/TypeScript labels remain available as regression evidence.
 
 ## Repository layout
 

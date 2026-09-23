@@ -36,6 +36,12 @@ interface GitHubFile {
 const root = process.cwd();
 const args = process.argv.slice(2);
 const target = Number(args.find((arg) => arg.startsWith('--target='))?.split('=')[1] ?? 120);
+const requestedLanguages = new Set(
+  (args.find((arg) => arg.startsWith('--languages='))?.split('=')[1] ?? 'typescript,go,java,python')
+    .split(',')
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean)
+);
 const outputPath = path.resolve(
   root,
   args.find((arg) => arg.startsWith('--output='))?.split('=')[1]
@@ -60,17 +66,30 @@ const authSource = configuredToken ? 'github_token' : installationAuthentication
 
 if (!token) throw new Error('GITHUB_TOKEN or GitHub App credentials are required to collect benchmark candidates.');
 if (!Number.isInteger(target) || target <= 0) throw new Error('--target must be a positive integer.');
+const supportedLanguages = new Set<Source['language']>(['typescript', 'go', 'java', 'python']);
+for (const language of requestedLanguages) {
+  if (!supportedLanguages.has(language as Source['language'])) {
+    throw new Error(`Unsupported --languages value: ${language}.`);
+  }
+}
 
-const sources: Source[] = [
+const configuredSources: Source[] = [
   { owner: 'fastify', repo: 'fastify', license: 'MIT', language: 'typescript', extensions: ['.js', '.mjs', '.cjs', '.ts', '.tsx'] },
   { owner: 'axios', repo: 'axios', license: 'MIT', language: 'typescript', extensions: ['.js', '.mjs', '.cjs', '.ts', '.tsx'] },
   { owner: 'gin-gonic', repo: 'gin', license: 'MIT', language: 'go', extensions: ['.go'] },
   { owner: 'prometheus', repo: 'client_golang', license: 'Apache-2.0', language: 'go', extensions: ['.go'] },
+  { owner: 'go-chi', repo: 'chi', license: 'MIT', language: 'go', extensions: ['.go'] },
+  { owner: 'uber-go', repo: 'zap', license: 'MIT', language: 'go', extensions: ['.go'] },
+  { owner: 'stretchr', repo: 'testify', license: 'MIT', language: 'go', extensions: ['.go'] },
+  { owner: 'spf13', repo: 'cobra', license: 'Apache-2.0', language: 'go', extensions: ['.go'] },
+  { owner: 'go-gorm', repo: 'gorm', license: 'MIT', language: 'go', extensions: ['.go'] },
   { owner: 'spring-projects', repo: 'spring-boot', license: 'Apache-2.0', language: 'java', extensions: ['.java'] },
   { owner: 'google', repo: 'guava', license: 'Apache-2.0', language: 'java', extensions: ['.java'] },
   { owner: 'pallets', repo: 'flask', license: 'BSD-3-Clause', language: 'python', extensions: ['.py'] },
   { owner: 'psf', repo: 'requests', license: 'Apache-2.0', language: 'python', extensions: ['.py'] }
 ];
+const sources = configuredSources.filter((source) => requestedLanguages.has(source.language));
+if (!sources.length) throw new Error('No benchmark sources match --languages.');
 const allowedLicenses = new Set(['MIT', 'Apache-2.0', 'BSD-2-Clause', 'BSD-3-Clause', 'ISC']);
 const sourceQuota = new Map(
   sources.map((source) => [`${source.owner}/${source.repo}`, Math.min(Math.ceil(target / sources.length), target)])
@@ -218,8 +237,9 @@ await writeFile(`${outputPath}.summary.json`, `${JSON.stringify({
   cases: target,
   collectedAt,
   authSource,
+  requestedLanguages: [...requestedLanguages].sort(),
   sources: sourceResults,
-  languages: Object.fromEntries(['typescript', 'go', 'java', 'python'].map((language) => [
+  languages: Object.fromEntries([...requestedLanguages].sort().map((language) => [
     language,
     sourceResults.filter((source) => source.language === language).reduce((sum, source) => sum + source.collected, 0)
   ])),

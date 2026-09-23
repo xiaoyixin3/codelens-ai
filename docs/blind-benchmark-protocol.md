@@ -53,3 +53,12 @@ The candidate queue, decisions, and exported labels remain Git-ignored because
 public PR content may still require review before redistribution. The decision
 store is versioned as protocol `blind-v1`; it is intentionally incompatible
 with the old assisted-label decision file.
+
+## Go-only queue
+
+`npm run benchmark:collect:go` independently samples 100 historical PRs across
+seven Go repositories. `npm run benchmark:label:go` opens that queue with
+separate `go-blind-review-decisions.json` and
+`go-blind-approved-replay.jsonl` files. Existing labels are never translated or
+silently reused because every human label must remain attached to its original
+diff evidence.
