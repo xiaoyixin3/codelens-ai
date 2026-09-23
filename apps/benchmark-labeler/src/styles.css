@@ -7,7 +7,7 @@
 
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 1180px; min-height: 100vh; }
-button, input, textarea { font: inherit; }
+button, input, textarea, select { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .48; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
@@ -45,3 +45,43 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   .review-grid { grid-template-columns: minmax(560px, 1fr) 370px; }
   .decision-actions { grid-template-columns: 1fr; }
 }
+
+/* Blind benchmark workflow */
+.decision-scroll { min-height: 0; flex: 1; overflow: auto; padding-right: 3px; }
+.diff-row.add[data-added-line] { cursor: pointer; }
+.diff-row.add[data-added-line]:hover, .diff-row.add.selected-line { background: #cceedd; box-shadow: inset 3px 0 #2c9b6d; }
+.guardrail.frozen { color: #177354; border-color: #ccebdd; background: #f1fbf7; }
+.guardrail.frozen strong { color: #17684e; }
+.blind-section, .comparison { padding: 12px; border: 1px solid #e1e6ed; border-radius: 10px; background: #fbfcfe; }
+.comparison { margin-top: 10px; }
+.section-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.section-heading h3 { margin: 0; font-size: 12px; }
+.section-heading > span { padding: 3px 7px; color: #67758a; border-radius: 99px; background: #edf1f6; font-size: 9px; font-weight: 700; }
+.empty-human { padding: 15px; color: #7c8899; border: 1px dashed #d5dce6; border-radius: 8px; background: white; font-size: 10px; line-height: 1.5; text-align: center; }
+.human-list { display: grid; gap: 7px; }
+.human-finding { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; padding: 9px 10px; border: 1px solid #dce3eb; border-radius: 8px; background: white; }
+.human-finding > div { min-width: 0; display: grid; gap: 4px; }
+.human-finding span { display: flex; gap: 6px; color: #748095; font-size: 9px; }
+.human-finding span b { color: #9b4d2d; text-transform: uppercase; }
+.human-finding strong { font-size: 11px; }
+.human-finding code { overflow: hidden; color: #4f68c2; font-size: 9px; white-space: nowrap; text-overflow: ellipsis; }
+.human-finding button { width: 23px; height: 23px; color: #a14d59; border: 0; border-radius: 5px; background: #fff0f2; }
+.finding-form { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 11px; padding-top: 11px; border-top: 1px solid #e2e7ee; }
+.finding-form label { display: grid; gap: 4px; color: #6d788a; font-size: 9px; font-weight: 750; }
+.finding-form select, .finding-form input { min-width: 0; padding: 7px 8px; color: #263144; border: 1px solid #d8dfe8; border-radius: 6px; outline: 0; background: white; font-size: 10px; }
+.finding-form select:focus, .finding-form input:focus { border-color: #647fe8; box-shadow: 0 0 0 2px #5577f312; }
+.finding-form .wide { grid-column: 1 / -1; }
+.add-finding { padding: 8px; color: #3452bb; border: 1px solid #cbd6fb; border-radius: 6px; background: #f4f7ff; font-size: 10px; font-weight: 750; }
+.active-path { align-self: center; min-width: 0; overflow: hidden; color: #8893a4; font: 9px ui-monospace, SFMono-Regular, Consolas, monospace; white-space: nowrap; text-overflow: ellipsis; }
+.comparison-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.comparison-summary b { display: grid; gap: 2px; padding: 9px 6px; color: #293c72; border-radius: 7px; background: white; font-size: 17px; text-align: center; }
+.comparison-summary small { color: #7a8698; font-size: 8px; font-weight: 650; }
+.machine-heading { margin: 12px 0 7px; color: #606d82; font-size: 10px; }
+.machine-list { display: grid; gap: 6px; }
+.machine-finding { display: grid; grid-template-columns: 38px 1fr; gap: 7px; align-items: start; padding: 8px; border: 1px solid #dce4ed; border-radius: 7px; background: white; }
+.machine-finding > span { padding: 2px 4px; color: #177354; border-radius: 4px; background: #e1f7ef; font-size: 8px; font-weight: 800; text-align: center; }
+.machine-finding.extra > span { color: #9b4d2d; background: #fff0e8; }
+.machine-finding > div { min-width: 0; display: grid; gap: 4px; }
+.machine-finding strong { font-size: 10px; }
+.machine-finding code { overflow: hidden; color: #61728e; font-size: 8px; white-space: nowrap; text-overflow: ellipsis; }
+.decision-actions:empty { display: none; }

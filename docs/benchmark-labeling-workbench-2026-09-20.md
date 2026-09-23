@@ -1,6 +1,11 @@
 # Historical benchmark labelling workbench — 2026-09-20
 
-Status: implemented and locally validated; human review is pending at 0/100.
+Status: superseded by [`blind-v1`](blind-benchmark-protocol.md). This document
+describes the historical machine-assisted regression workflow only.
+
+> The resulting 100-case score must not be presented as real-world precision or
+> recall: the same rules mined the queue, predictions were visible to reviewers,
+> and the interface could not record machine misses.
 
 ## Outcome
 
@@ -42,7 +47,7 @@ and verified at a 1440×900 viewport in a real Edge browser.
 - Temporary test decisions were removed after validation; formal progress
   remains 0/100.
 
-## Completion procedure
+## Historical completion procedure
 
 1. Run `npm run benchmark:label` and open `http://127.0.0.1:4310`.
 2. Review all 100 cases; do not approve a machine suggestion without reading

@@ -6,6 +6,10 @@ export interface ExpectedFinding {
   ruleId: string;
   path: string;
   line: number;
+  category?: string | undefined;
+  severity?: 'critical' | 'high' | 'medium' | 'low' | undefined;
+  title?: string | undefined;
+  notes?: string | undefined;
 }
 
 export interface ReplayCase {
@@ -31,7 +35,11 @@ export const ReplayCaseSchema = z.object({
   expectedFindings: z.array(z.object({
     ruleId: z.string().trim().min(1),
     path: z.string().trim().min(1),
-    line: z.number().int().positive()
+    line: z.number().int().positive(),
+    category: z.string().trim().min(1).optional(),
+    severity: z.enum(['critical', 'high', 'medium', 'low']).optional(),
+    title: z.string().trim().min(1).max(160).optional(),
+    notes: z.string().trim().min(1).max(2_000).optional()
   })),
   approval: z.discriminatedUnion('status', [
     z.object({ status: z.literal('candidate') }),
@@ -69,7 +77,32 @@ export interface BenchmarkReport {
   precision: number;
   recall: number;
   latencyMs: { p50: number; p95: number; max: number };
+  confidence95?: {
+    precision: { lower: number; upper: number };
+    recall: { lower: number; upper: number };
+  };
+  byCategory?: Record<string, {
+    expected: number;
+    predicted: number;
+    truePositive: number;
+    falsePositive: number;
+    falseNegative: number;
+    precision: number;
+    recall: number;
+  }>;
+  falsePositives?: BenchmarkMismatch[];
+  falseNegatives?: BenchmarkMismatch[];
   insufficientSampleWarning?: string;
+}
+
+export interface BenchmarkMismatch {
+  caseId: string;
+  repository: string;
+  pullNumber: number;
+  sourceUrl?: string;
+  ruleId: string;
+  path: string;
+  line: number;
 }
 
 export interface BenchmarkThresholds {
@@ -196,13 +229,33 @@ export function evaluateBenchmarkGate(
   return { passed: failures.length === 0, failures, thresholds };
 }
 
-function key(value: { ruleId?: string; path: string; line: number }): string {
-  return `${value.ruleId ?? 'unknown'}|${value.path}|${value.line}`;
+function evaluationCategory(value: { ruleId?: string | undefined; category?: string | undefined }): string {
+  if (value.category) return value.category.replaceAll('-', '_');
+  const ruleId = value.ruleId ?? 'unknown';
+  return (ruleId.startsWith('human/') ? ruleId.slice('human/'.length) : ruleId.split('/')[0] ?? 'unknown')
+    .replaceAll('-', '_');
+}
+
+function key(value: { ruleId?: string | undefined; category?: string | undefined; path: string; line: number }): string {
+  return `${evaluationCategory(value)}|${value.path}|${value.line}`;
 }
 
 function percentile(sorted: number[], percent: number): number {
   if (!sorted.length) return 0;
   return sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * percent) - 1)] ?? 0;
+}
+
+function wilson(successes: number, total: number): { lower: number; upper: number } {
+  if (total === 0) return { lower: 0, upper: 1 };
+  const z = 1.959963984540054;
+  const proportion = successes / total;
+  const denominator = 1 + z * z / total;
+  const center = (proportion + z * z / (2 * total)) / denominator;
+  const margin = z * Math.sqrt((proportion * (1 - proportion) + z * z / (4 * total)) / total) / denominator;
+  return {
+    lower: Number(Math.max(0, center - margin).toFixed(4)),
+    upper: Number(Math.min(1, center + margin).toFixed(4))
+  };
 }
 
 export async function runBenchmark(cases: ReplayCase[]): Promise<BenchmarkReport> {
@@ -212,6 +265,9 @@ export async function runBenchmark(cases: ReplayCase[]): Promise<BenchmarkReport
   let predicted = 0;
   let truePositive = 0;
   const latency: number[] = [];
+  const falsePositives: BenchmarkMismatch[] = [];
+  const falseNegatives: BenchmarkMismatch[] = [];
+  const categoryCounts = new Map<string, { expected: number; predicted: number; truePositive: number }>();
 
   for (const item of cases) {
     const started = performance.now();
@@ -224,12 +280,49 @@ export async function runBenchmark(cases: ReplayCase[]): Promise<BenchmarkReport
     expected += expectedKeys.size;
     predicted += predictedKeys.size;
     truePositive += [...predictedKeys].filter((value) => expectedKeys.has(value)).length;
+    const sourceUrl = item.provenance.kind === 'historical_pr' ? item.provenance.sourceUrl : undefined;
+    const mismatch = (finding: { ruleId?: string; path: string; line: number }): BenchmarkMismatch => ({
+      caseId: item.id,
+      repository: `${item.context.owner}/${item.context.repo}`,
+      pullNumber: item.context.number,
+      ...(sourceUrl ? { sourceUrl } : {}),
+      ruleId: finding.ruleId ?? 'unknown',
+      path: finding.path,
+      line: finding.line
+    });
+    for (const finding of findings) {
+      const findingKey = key(finding);
+      const category = evaluationCategory(finding);
+      const counts = categoryCounts.get(category) ?? { expected: 0, predicted: 0, truePositive: 0 };
+      counts.predicted += 1;
+      if (expectedKeys.has(findingKey)) counts.truePositive += 1;
+      else falsePositives.push(mismatch(finding));
+      categoryCounts.set(category, counts);
+    }
+    for (const finding of item.expectedFindings) {
+      const category = evaluationCategory(finding);
+      const counts = categoryCounts.get(category) ?? { expected: 0, predicted: 0, truePositive: 0 };
+      counts.expected += 1;
+      categoryCounts.set(category, counts);
+      if (!predictedKeys.has(key(finding))) falseNegatives.push(mismatch(finding));
+    }
   }
 
   const falsePositive = predicted - truePositive;
   const falseNegative = expected - truePositive;
   const sorted = latency.sort((left, right) => left - right);
   const positiveCases = cases.filter((item) => item.expectedFindings.length > 0).length;
+  const byCategory = Object.fromEntries([...categoryCounts.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([category, counts]) => {
+    const falsePositive = counts.predicted - counts.truePositive;
+    const falseNegative = counts.expected - counts.truePositive;
+    return [category, {
+      ...counts,
+      falsePositive,
+      falseNegative,
+      precision: counts.predicted ? counts.truePositive / counts.predicted : counts.expected ? 0 : 1,
+      recall: counts.expected ? counts.truePositive / counts.expected : 1
+    }];
+  }));
   return {
     cases: cases.length,
     positiveCases,
@@ -246,6 +339,13 @@ export async function runBenchmark(cases: ReplayCase[]): Promise<BenchmarkReport
       p95: Number(percentile(sorted, 0.95).toFixed(2)),
       max: Number((sorted.at(-1) ?? 0).toFixed(2))
     },
+    confidence95: {
+      precision: wilson(truePositive, predicted),
+      recall: wilson(truePositive, expected)
+    },
+    byCategory,
+    falsePositives,
+    falseNegatives,
     ...(cases.length < 100
       ? { insufficientSampleWarning: `Only ${cases.length}/100 historical PR cases are loaded.` }
       : {})

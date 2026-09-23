@@ -124,14 +124,49 @@ describe('historical replay', () => {
           patch: '@@ -1,1 +1,1 @@\n-old();\n+items.forEach(async (item) => save(item));'
         }]
       },
-      expectedFindings: [{ ruleId: 'concurrency/no-async-foreach', path: 'src/jobs.ts', line: 1 }],
+      expectedFindings: [{ ruleId: 'human/concurrency', category: 'concurrency', path: 'src/jobs.ts', line: 1 }],
       approval: { status: 'candidate' },
       provenance: { kind: 'fixture' }
     }]);
 
     expect(report).toMatchObject({ cases: 1, precision: 1, recall: 1, truePositive: 1 });
     expect(report).toMatchObject({ positiveCases: 1, negativeCases: 0 });
+    expect(report.confidence95?.precision.lower).toBeLessThan(1);
+    expect(report.byCategory?.concurrency).toMatchObject({
+      expected: 1,
+      predicted: 1,
+      truePositive: 1,
+      falsePositive: 0,
+      falseNegative: 0
+    });
+    expect(report.falsePositives).toEqual([]);
+    expect(report.falseNegatives).toEqual([]);
     expect(report.insufficientSampleWarning).toContain('1/100');
+  });
+
+  it('reports machine misses and extras instead of hiding disagreement', async () => {
+    const report = await runBenchmark([{
+      id: 'blind-disagreement',
+      context: {
+        owner: 'sample', repo: 'replay', number: 2, title: 'Mixed risks', body: '',
+        baseSha: 'ccccccc', headSha: 'ddddddd',
+        files: [{
+          path: 'src/jobs.ts', status: 'modified', additions: 2, deletions: 0,
+          patch: '@@ -1,0 +1,2 @@\n+items.forEach(async (item) => save(item));\n+chargeCardWithoutIdempotency();'
+        }]
+      },
+      expectedFindings: [{ ruleId: 'human/data-integrity', path: 'src/jobs.ts', line: 2 }],
+      approval: { status: 'approved', approvedBy: 'blind-reviewer', approvedAt: '2026-09-22T00:00:00.000Z' },
+      provenance: { kind: 'fixture' }
+    }]);
+
+    expect(report).toMatchObject({ truePositive: 0, falsePositive: 1, falseNegative: 1, precision: 0, recall: 0 });
+    expect(report.falsePositives).toEqual([expect.objectContaining({
+      caseId: 'blind-disagreement', ruleId: 'concurrency/no-async-foreach', line: 1
+    })]);
+    expect(report.falseNegatives).toEqual([expect.objectContaining({
+      caseId: 'blind-disagreement', ruleId: 'human/data-integrity', line: 2
+    })]);
   });
 
   it('enforces sample, quality, and latency release thresholds', async () => {

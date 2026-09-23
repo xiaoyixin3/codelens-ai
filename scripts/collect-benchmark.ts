@@ -1,5 +1,7 @@
 import { mkdir, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { App } from 'octokit';
+import { loadConfig } from '@codelens/config';
 import { ReplayCaseSchema, type ReplayCase } from '@codelens/evaluation';
 import { redactSecrets } from '@codelens/security';
 
@@ -7,7 +9,8 @@ interface Source {
   owner: string;
   repo: string;
   license: string;
-  quota: number;
+  language: 'typescript' | 'go' | 'java' | 'python';
+  extensions: string[];
 }
 
 interface GitHubPull {
@@ -32,27 +35,45 @@ interface GitHubFile {
 
 const root = process.cwd();
 const args = process.argv.slice(2);
-const target = Number(args.find((arg) => arg.startsWith('--target='))?.split('=')[1] ?? 100);
+const target = Number(args.find((arg) => arg.startsWith('--target='))?.split('=')[1] ?? 120);
 const outputPath = path.resolve(
   root,
   args.find((arg) => arg.startsWith('--output='))?.split('=')[1]
     ?? 'benchmarks/candidates/public-prs.jsonl'
 );
-const token = process.env.GITHUB_TOKEN?.trim();
+const configuredToken = process.env.GITHUB_TOKEN?.trim();
+const config = loadConfig();
+const app = !configuredToken && config.GITHUB_APP_ID && config.GITHUB_PRIVATE_KEY
+  ? new App({ appId: config.GITHUB_APP_ID, privateKey: config.GITHUB_PRIVATE_KEY })
+  : undefined;
+const installations = app
+  ? await app.octokit.paginate(app.octokit.rest.apps.listInstallations, { per_page: 100 })
+  : [];
+const installationClient = app && installations[0]
+  ? await app.getInstallationOctokit(installations[0].id)
+  : undefined;
+const installationAuthentication = installationClient
+  ? await installationClient.auth({ type: 'installation' }) as { token: string }
+  : undefined;
+const token = configuredToken ?? installationAuthentication?.token;
+const authSource = configuredToken ? 'github_token' : installationAuthentication ? 'github_app_installation' : 'none';
 
-if (!token) throw new Error('GITHUB_TOKEN is required to collect benchmark candidates.');
+if (!token) throw new Error('GITHUB_TOKEN or GitHub App credentials are required to collect benchmark candidates.');
 if (!Number.isInteger(target) || target <= 0) throw new Error('--target must be a positive integer.');
 
 const sources: Source[] = [
-  { owner: 'fastify', repo: 'fastify', license: 'MIT', quota: 20 },
-  { owner: 'vitest-dev', repo: 'vitest', license: 'MIT', quota: 20 },
-  { owner: 'axios', repo: 'axios', license: 'MIT', quota: 20 },
-  { owner: 'sindresorhus', repo: 'p-limit', license: 'MIT', quota: 20 },
-  { owner: 'microsoft', repo: 'TypeScript', license: 'Apache-2.0', quota: 20 }
+  { owner: 'fastify', repo: 'fastify', license: 'MIT', language: 'typescript', extensions: ['.js', '.mjs', '.cjs', '.ts', '.tsx'] },
+  { owner: 'axios', repo: 'axios', license: 'MIT', language: 'typescript', extensions: ['.js', '.mjs', '.cjs', '.ts', '.tsx'] },
+  { owner: 'gin-gonic', repo: 'gin', license: 'MIT', language: 'go', extensions: ['.go'] },
+  { owner: 'prometheus', repo: 'client_golang', license: 'Apache-2.0', language: 'go', extensions: ['.go'] },
+  { owner: 'spring-projects', repo: 'spring-boot', license: 'Apache-2.0', language: 'java', extensions: ['.java'] },
+  { owner: 'google', repo: 'guava', license: 'Apache-2.0', language: 'java', extensions: ['.java'] },
+  { owner: 'pallets', repo: 'flask', license: 'BSD-3-Clause', language: 'python', extensions: ['.py'] },
+  { owner: 'psf', repo: 'requests', license: 'Apache-2.0', language: 'python', extensions: ['.py'] }
 ];
 const allowedLicenses = new Set(['MIT', 'Apache-2.0', 'BSD-2-Clause', 'BSD-3-Clause', 'ISC']);
 const sourceQuota = new Map(
-  sources.map((source) => [`${source.owner}/${source.repo}`, Math.min(source.quota, target)])
+  sources.map((source) => [`${source.owner}/${source.repo}`, Math.min(Math.ceil(target / sources.length), target)])
 );
 const headers = {
   accept: 'application/vnd.github+json',
@@ -81,8 +102,9 @@ async function githubGet<T>(endpoint: string): Promise<T> {
   throw new Error(`GitHub ${endpoint} failed after retries: ${lastError}.`);
 }
 
-function isReviewablePath(value: string): boolean {
-  return /\.[cm]?[jt]sx?$/i.test(value) && !/(?:^|\/)(?:dist|vendor|fixtures?)(?:\/|$)/i.test(value);
+function isReviewablePath(value: string, source: Source): boolean {
+  return source.extensions.some((extension) => value.toLowerCase().endsWith(extension))
+    && !/(?:^|\/)(?:dist|vendor|fixtures?|generated|third_party)(?:\/|$)/i.test(value);
 }
 
 function containsRedactedContent(value: string): boolean {
@@ -96,6 +118,7 @@ const sourceResults: Array<{
   requested: number;
   collected: number;
   license: string;
+  language: Source['language'];
 }> = [];
 let carriedShortfall = 0;
 
@@ -129,7 +152,7 @@ for (const source of sources) {
       );
       if (files.length < 1 || files.length > 25) continue;
       const reviewable = files.filter((file) =>
-        isReviewablePath(file.filename) && typeof file.patch === 'string' && file.patch.length > 0
+        isReviewablePath(file.filename, source) && typeof file.patch === 'string' && file.patch.length > 0
       );
       if (!reviewable.length) continue;
       const patchChars = reviewable.reduce((sum, file) => sum + (file.patch?.length ?? 0), 0);
@@ -175,7 +198,7 @@ for (const source of sources) {
     }
   }
   carriedShortfall = Math.max(0, quota - collected);
-  sourceResults.push({ repository, requested: quota, collected, license: source.license });
+  sourceResults.push({ repository, requested: quota, collected, license: source.license, language: source.language });
 }
 
 if (cases.length < target) {
@@ -194,7 +217,13 @@ await writeFile(`${outputPath}.summary.json`, `${JSON.stringify({
   outputPath: path.relative(root, outputPath).replaceAll('\\', '/'),
   cases: target,
   collectedAt,
+  authSource,
   sources: sourceResults,
+  languages: Object.fromEntries(['typescript', 'go', 'java', 'python'].map((language) => [
+    language,
+    sourceResults.filter((source) => source.language === language).reduce((sum, source) => sum + source.collected, 0)
+  ])),
+  samplingProtocol: 'Repository-stratified historical PR sampling. Detector output is never used to select candidates.',
   approvalWarning: 'Candidates do not count toward the release gate until each case is human-labelled and approved.'
 }, null, 2)}\n`, 'utf8');
 

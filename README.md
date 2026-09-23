@@ -216,9 +216,9 @@ npm run typecheck
 npm test
 npm run build
 npm run benchmark
-npm run benchmark:collect-positive -- --target-positive=20 --target-total=100
+npm run benchmark:collect -- --target=120
 npm run benchmark:label
-npm run benchmark:gate -- benchmarks/approved-replay.jsonl
+npm run benchmark:gate -- benchmarks/candidates/blind-approved-replay.jsonl
 npm run beta:readiness
 npm run github:preflight
 npm run smoke:pipeline
@@ -229,6 +229,13 @@ npm run release:check
 npm run dev:api
 npm run dev:worker
 ```
+
+The default labeler uses the [`blind-v1` protocol](docs/blind-benchmark-protocol.md):
+machine predictions are withheld until the reviewer freezes independent human
+labels, and the report includes 95% confidence intervals plus explicit misses
+and extra predictions. The former machine-assisted 100-case set is retained
+only as a deterministic regression suite and is not evidence of real-world
+precision or recall.
 
 ## Repository layout
 

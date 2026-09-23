@@ -1,6 +1,8 @@
 # Historical PR candidate intake — 2026-09-19
 
-Status: candidate collection complete; human labelling and approval pending.
+Status: historical TypeScript/JavaScript intake. Superseded for product-quality
+evaluation by the language-stratified [`blind-v1`](blind-benchmark-protocol.md)
+collector and labeler.
 
 The collector validated each repository's live SPDX license, selected merged
 non-bot pull requests with reviewable JavaScript or TypeScript patches, rejected

@@ -9,6 +9,10 @@ interface ExpectedFinding {
   ruleId: string;
   path: string;
   line: number;
+  category?: string | undefined;
+  severity?: 'critical' | 'high' | 'medium' | 'low' | undefined;
+  title?: string | undefined;
+  notes?: string | undefined;
 }
 
 interface StoredDecision {
@@ -17,10 +21,12 @@ interface StoredDecision {
   reviewer: string;
   notes?: string;
   updatedAt: string;
+  protocol: 'blind-v1';
 }
 
 interface DecisionStore {
-  version: 1;
+  version: 2;
+  protocol: 'blind-v1';
   updatedAt: string;
   decisions: Record<string, StoredDecision>;
 }
@@ -29,9 +35,9 @@ const args = process.argv.slice(2);
 const readArg = (name: string, fallback: string): string =>
   args.find((arg) => arg.startsWith(`${name}=`))?.slice(name.length + 1) ?? fallback;
 const root = process.cwd();
-const inputPath = path.resolve(root, readArg('--input', 'benchmarks/candidates/review-queue.jsonl'));
-const decisionsPath = path.resolve(root, readArg('--decisions', 'benchmarks/candidates/review-decisions.json'));
-const outputPath = path.resolve(root, readArg('--output', 'benchmarks/candidates/approved-replay.jsonl'));
+const inputPath = path.resolve(root, readArg('--input', 'benchmarks/candidates/public-prs.jsonl'));
+const decisionsPath = path.resolve(root, readArg('--decisions', 'benchmarks/candidates/blind-review-decisions.json'));
+const outputPath = path.resolve(root, readArg('--output', 'benchmarks/candidates/blind-approved-replay.jsonl'));
 const staticRoot = path.resolve(root, 'apps/benchmark-labeler');
 const host = '127.0.0.1';
 const port = Number(process.env.BENCHMARK_LABELER_PORT ?? '4310');
@@ -40,14 +46,20 @@ if (!Number.isInteger(port) || port < 1 || port > 65_535) {
   throw new Error('BENCHMARK_LABELER_PORT must be a valid TCP port.');
 }
 
+const ExpectedFindingInputSchema = z.object({
+  ruleId: z.string().trim().min(1).max(120),
+  path: z.string().trim().min(1),
+  line: z.number().int().positive(),
+  category: z.enum(['correctness', 'security', 'data_integrity', 'concurrency', 'performance', 'architecture', 'test_gap']).optional(),
+  severity: z.enum(['critical', 'high', 'medium', 'low']).optional(),
+  title: z.string().trim().min(1).max(160).optional(),
+  notes: z.string().trim().min(1).max(2_000).optional()
+});
+
 const DecisionInputSchema = z.object({
   status: z.enum(['approved', 'deferred']),
   reviewer: z.string().trim().min(2).max(80),
-  expectedFindings: z.array(z.object({
-    ruleId: z.string().trim().min(1),
-    path: z.string().trim().min(1),
-    line: z.number().int().positive()
-  })).max(100),
+  expectedFindings: z.array(ExpectedFindingInputSchema).max(100),
   notes: z.string().trim().min(1).max(2_000).optional()
 });
 
@@ -74,15 +86,17 @@ async function readDecisions(): Promise<DecisionStore> {
   try {
     const source = JSON.parse(await readFile(decisionsPath, 'utf8')) as unknown;
     return z.object({
-      version: z.literal(1),
+      version: z.literal(2),
+      protocol: z.literal('blind-v1'),
       updatedAt: z.string().datetime({ offset: true }),
       decisions: z.record(z.string(), DecisionInputSchema.extend({
+        protocol: z.literal('blind-v1'),
         updatedAt: z.string().datetime({ offset: true })
       }))
     }).parse(source) as DecisionStore;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return { version: 1, updatedAt: new Date(0).toISOString(), decisions: {} };
+      return { version: 2, protocol: 'blind-v1', updatedAt: new Date(0).toISOString(), decisions: {} };
     }
     throw error;
   }
@@ -97,6 +111,24 @@ async function atomicWrite(filePath: string, contents: string): Promise<void> {
 
 function findingKey(value: ExpectedFinding): string {
   return `${value.ruleId}|${value.path}|${value.line}`;
+}
+
+function addedLines(patch: string): Set<number> {
+  const result = new Set<number>();
+  let nextLine = 0;
+  for (const content of patch.split(/\r?\n/)) {
+    const hunk = content.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    if (hunk) {
+      nextLine = Number(hunk[1]);
+      continue;
+    }
+    if (content.startsWith('+') && !content.startsWith('+++')) {
+      result.add(nextLine++);
+    } else if (!content.startsWith('-') || content.startsWith('---')) {
+      if (nextLine) nextLine += 1;
+    }
+  }
+  return result;
 }
 
 const cases = await readCases();
@@ -155,6 +187,7 @@ app.get('/api/state', async () => {
   const approved = Object.values(store.decisions).filter((item) => item.status === 'approved').length;
   const deferred = Object.values(store.decisions).filter((item) => item.status === 'deferred').length;
   return {
+    protocol: 'blind-v1',
     generatedAt: new Date().toISOString(),
     inputPath: relative(inputPath),
     outputPath: relative(outputPath),
@@ -162,22 +195,23 @@ app.get('/api/state', async () => {
       total: cases.length,
       approved,
       deferred,
-      pending: cases.length - approved - deferred,
-      suggestedPositive: [...suggestions.values()].filter((items) => items.length > 0).length,
-      suggestedNegative: [...suggestions.values()].filter((items) => items.length === 0).length
+      pending: cases.length - approved - deferred
     },
     cases: cases.map((item) => {
       if (item.provenance.kind !== 'historical_pr') {
         throw new Error(`Labeler only accepts historical PR cases: ${item.id}`);
       }
+      const decision = store.decisions[item.id];
+      const machinePredictionRevealed = decision?.status === 'approved';
       return {
         id: item.id,
         ...item.context,
         sourceUrl: item.provenance.sourceUrl,
         repositoryLicense: item.provenance.repositoryLicense,
         collectedAt: item.provenance.collectedAt,
-        suggestions: suggestions.get(item.id) ?? [],
-        ...(store.decisions[item.id] ? { decision: store.decisions[item.id] } : {})
+        machinePredictionRevealed,
+        machineSuggestions: machinePredictionRevealed ? suggestions.get(item.id) ?? [] : [],
+        ...(decision ? { decision } : {})
       };
     })
   };
@@ -188,26 +222,34 @@ app.put<{ Params: { id: string } }>('/api/decisions/:id', async (request, reply)
   if (!item) return reply.code(404).send({ error: 'Benchmark case was not found.' });
   const parsed = DecisionInputSchema.safeParse(request.body);
   if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid decision.' });
-
-  const allowed = new Set((suggestions.get(item.id) ?? []).filter((finding) => finding.ruleId).map((finding) =>
-    findingKey({ ruleId: finding.ruleId!, path: finding.path, line: finding.line })
-  ));
-  const unsupported = parsed.data.expectedFindings.find((finding) => !allowed.has(findingKey(finding)));
-  if (unsupported) {
-    return reply.code(400).send({ error: 'Expected findings must come from this case’s verified suggestions.' });
-  }
   if (parsed.data.status === 'deferred' && parsed.data.expectedFindings.length) {
     return reply.code(400).send({ error: 'Deferred cases cannot contain approved findings.' });
   }
 
   const store = await readDecisions();
+  if (store.decisions[item.id]?.status === 'approved') {
+    return reply.code(409).send({ error: 'Blind decisions are frozen after machine predictions are revealed.' });
+  }
+  const files = new Map(item.context.files.map((file) => [file.path, file]));
+  const seen = new Set<string>();
+  for (const finding of parsed.data.expectedFindings) {
+    const file = files.get(finding.path);
+    if (!file) return reply.code(400).send({ error: `Finding path is not part of this pull request: ${finding.path}` });
+    if (!addedLines(file.patch).has(finding.line)) {
+      return reply.code(400).send({ error: `Finding line must reference an added right-side diff line: ${finding.path}:${finding.line}` });
+    }
+    const key = findingKey(finding);
+    if (seen.has(key)) return reply.code(400).send({ error: `Duplicate finding: ${key}` });
+    seen.add(key);
+  }
   const updatedAt = new Date().toISOString();
   store.decisions[item.id] = {
     status: parsed.data.status,
     reviewer: parsed.data.reviewer,
     expectedFindings: parsed.data.expectedFindings,
     ...(parsed.data.notes ? { notes: parsed.data.notes } : {}),
-    updatedAt
+    updatedAt,
+    protocol: 'blind-v1'
   };
   store.updatedAt = updatedAt;
   await atomicWrite(decisionsPath, `${JSON.stringify(store, null, 2)}\n`);
@@ -257,6 +299,7 @@ app.get('/*', async (request, reply) => {
 await app.listen({ host, port });
 console.log(JSON.stringify({
   status: 'ready',
+  protocol: 'blind-v1',
   url: `http://${host}:${port}`,
   cases: cases.length,
   input: relative(inputPath),
