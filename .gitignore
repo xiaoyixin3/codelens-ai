@@ -9,6 +9,7 @@ node_modules/
 .pnpm-store/
 coverage/
 dist/
+target/
 .codelens-workspaces/
 *.log
 benchmarks/candidates/

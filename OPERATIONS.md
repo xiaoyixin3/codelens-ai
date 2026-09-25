@@ -3,9 +3,9 @@
 ## Health and recovery
 
 - `/healthz` confirms the API process is alive.
-- `/readyz` verifies PostgreSQL, which stores both review state and the durable Go job queue.
+- `/readyz` verifies PostgreSQL, which stores both review state and the durable job queue.
 - The GitHub webhook route is limited to `WEBHOOK_RATE_LIMIT_MAX` requests per source IP per minute (default 300).
-- The Go worker retries PostgreSQL-backed review jobs three times. Review and publication IDs remain stable across retries.
+- The Java worker retries PostgreSQL-backed review jobs three times. Review and publication IDs remain stable across retries.
 - A push during analysis makes the old run stale and suppresses its PR comment.
 
 ## Local pipeline smoke test

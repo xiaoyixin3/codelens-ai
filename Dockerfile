@@ -1,14 +1,11 @@
-FROM golang:1.27-alpine AS go-build
+FROM maven:3.9-eclipse-temurin-17-alpine AS java-build
 WORKDIR /src
-COPY go.mod go.sum ./
-RUN go mod download
-COPY cmd ./cmd
-COPY internal ./internal
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/codelens-api ./cmd/api \
- && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/codelens-worker ./cmd/worker \
- && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/codelens-migrate ./cmd/migrate
+COPY pom.xml ./
+RUN mvn -q -DskipTests dependency:go-offline
+COPY src ./src
+RUN mvn -q -DskipTests package
 
-FROM node:24-alpine AS legacy-build
+FROM node:24-alpine AS tooling-build
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY apps ./apps
@@ -19,14 +16,17 @@ COPY scripts ./scripts
 RUN npm run build:legacy
 RUN npm prune --omit=dev
 
-FROM node:24-alpine AS runtime
+FROM eclipse-temurin:17-jre-alpine AS runtime
+RUN apk add --no-cache nodejs \
+ && addgroup -S codelens \
+ && adduser -S -G codelens codelens
 ENV NODE_ENV=production
 WORKDIR /app
-COPY --from=go-build --chown=node:node /out/codelens-api /out/codelens-worker /out/codelens-migrate ./
-COPY --from=legacy-build --chown=node:node /app/package.json /app/package-lock.json ./
-COPY --from=legacy-build --chown=node:node /app/node_modules ./node_modules
-COPY --from=legacy-build --chown=node:node /app/dist ./dist
-COPY --chown=node:node infra/migrations ./infra/migrations
-USER node
+COPY --from=java-build --chown=codelens:codelens /src/target/codelens-ai.jar ./codelens-ai.jar
+COPY --from=tooling-build --chown=codelens:codelens /app/package.json /app/package-lock.json ./
+COPY --from=tooling-build --chown=codelens:codelens /app/node_modules ./node_modules
+COPY --from=tooling-build --chown=codelens:codelens /app/dist ./dist
+COPY --chown=codelens:codelens infra/migrations ./infra/migrations
+USER codelens
 EXPOSE 3000
-CMD ["/app/codelens-api"]
+CMD ["java", "-Dcodelens.mode=api", "-jar", "/app/codelens-ai.jar"]

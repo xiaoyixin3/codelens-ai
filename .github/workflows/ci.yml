@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   quality:
-    name: Go and TypeScript quality gates
+    name: Java and TypeScript quality gates
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -31,11 +31,12 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - name: Set up Java
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
+          distribution: temurin
+          java-version: '17'
+          cache: maven
 
       - name: Install locked dependencies
         run: npm ci --ignore-scripts
@@ -89,17 +90,23 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - name: Set up Java
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
+          distribution: temurin
+          java-version: '17'
+          cache: maven
 
       - name: Install locked dependencies
         run: npm ci --ignore-scripts
 
       - name: Apply migrations
         run: npm run db:migrate
+
+      - name: Verify Java PostgreSQL queue and provider contracts
+        env:
+          CODELENS_INTEGRATION_TESTS: 'true'
+        run: mvn -q test
 
       - name: Run full pipeline smoke test
         run: npm run smoke:pipeline
@@ -108,14 +115,14 @@ jobs:
         run: docker build --tag codelens-ai:ci .
 
       - name: Verify non-root runtime image
-        run: test "$(docker image inspect codelens-ai:ci --format '{{.Config.User}}')" = "node"
+        run: test "$(docker image inspect codelens-ai:ci --format '{{.Config.User}}')" = "codelens"
 
       - name: Verify bundled migration and pipeline commands
         run: |
           docker run --rm --network host \
             -e DATABASE_URL="$DATABASE_URL" \
             -e GITHUB_WEBHOOK_SECRET="$GITHUB_WEBHOOK_SECRET" \
-            codelens-ai:ci /app/codelens-migrate
+            codelens-ai:ci java -Dcodelens.mode=migrate -jar /app/codelens-ai.jar
           docker run --rm --network host \
             -e DATABASE_URL="$DATABASE_URL" \
             -e REDIS_URL="$REDIS_URL" \

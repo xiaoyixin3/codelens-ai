@@ -1,6 +1,6 @@
 # ADR 0005: Bounded multi-language indexing
 
-Status: accepted, 2026-09-22
+Status: amended by ADR 0006, 2026-09-25 (parser behavior retained in Java)
 
 ## Context
 

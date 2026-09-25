@@ -6,11 +6,13 @@ All notable changes to CodeLens AI are documented in this file. The project foll
 
 ### Changed
 
-- Made Go 1.27 the primary runtime for the webhook API, worker, migration command, GitHub App client, deterministic review, and publication pipeline.
+- Replaced the production Go runtime with Java 17 and Spring Boot for the webhook API, worker, migration runner, GitHub App client, repository policy, review intelligence, and publication pipeline.
+- Ported the V2 model-provider control plane, AES-GCM credential vault, connection testing, and audit persistence to the Java API.
+- Switched Maven tests, Java CodeQL, Maven Dependabot, local beta startup, Compose, and the production container to the Java runtime while retaining Go only as an explicit rollback layer.
 - Replaced the production Redis/BullMQ dependency with a leased PostgreSQL job queue using bounded retries and stale-job recovery.
-- Added Go unit tests, Go CodeQL analysis, Go module Dependabot updates, and Go binaries to the production image.
-- Ported repository policy loading, Go/TypeScript/JavaScript symbol snapshots, bounded impact analysis, optional LLM summary/risk review, provider fallback, budgets, redaction, and telemetry into the Go worker.
-- Retained TypeScript benchmark, lifecycle, compatibility tests, and legacy worker only as an explicit rollback/tooling layer.
+- Added Java unit and PostgreSQL contract tests, Java CodeQL analysis, Maven Dependabot updates, and the executable JAR to the production image.
+- Ported multi-language symbol snapshots, bounded impact analysis, optional LLM summary/risk review, provider fallback, budgets, redaction, and telemetry into the Java worker.
+- Retained TypeScript benchmark, lifecycle, and compatibility tools plus the former Go runtime only as explicit rollback/tooling layers.
 
 ## [1.0.0-beta.1] - 2026-09-19
 

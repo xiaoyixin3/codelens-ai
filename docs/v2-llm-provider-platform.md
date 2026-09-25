@@ -2,7 +2,7 @@
 
 Status: in progress; Milestone A implemented
 Target: V2.0  
-Primary runtime: Go
+Primary runtime: Java 17 / Spring Boot (ADR 0006)
 
 ## Product outcome
 
@@ -270,7 +270,7 @@ Operational targets for V2 beta:
 
 Exit condition: a connection can be created and tested without restarting services.
 
-Status: complete in the Go API. See
+Status: complete in the Java API. See
 [Model provider control plane](model-provider-control-plane.md).
 
 ### Milestone B — repository routing

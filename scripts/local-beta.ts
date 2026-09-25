@@ -181,12 +181,13 @@ async function main(): Promise<void> {
       'Docker dependencies'
     );
   }
-  runChecked('go', ['run', './cmd/migrate'], 'Database migration');
+  runChecked('mvn', ['-q', '-DskipTests', 'package'], 'Java build');
+  runChecked('java', ['-Dcodelens.mode=migrate', '-jar', 'target/codelens-ai.jar'], 'Database migration');
 
-  const api = startChild('Go API', 'go', ['run', './cmd/api']);
+  const api = startChild('Java API', 'java', ['-Dcodelens.mode=api', '-jar', 'target/codelens-ai.jar']);
   const localReadyUrl = `http://127.0.0.1:${config.PORT}/readyz`;
   await waitForReady(localReadyUrl);
-  startChild('Go worker', 'go', ['run', './cmd/worker']);
+  startChild('Java worker', 'java', ['-Dcodelens.mode=worker', '-jar', 'target/codelens-ai.jar']);
 
   const tunnelProvider = process.env.CODELENS_TUNNEL_PROVIDER?.trim().toLowerCase() || 'cloudflare';
   if (!['cloudflare', 'ngrok'].includes(tunnelProvider)) {

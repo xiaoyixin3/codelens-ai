@@ -9,10 +9,10 @@ GitHub webhook
   → signature verification and delivery deduplication
   → idempotent review run
   → PostgreSQL durable job queue
-  → Go worker
+  → Java 17 worker
   → PR diff retrieval
   → immutable repository policy from .codelens.yml + CODELENS.md
-  → Go-native base/head changed-file symbol snapshots
+  → Java-native base/head changed-file symbol snapshots
   → symbol matching and bounded impact traversal
   → structured change summary
   → deterministic + optional LLM risk candidates
@@ -32,7 +32,7 @@ The current milestone intentionally does not execute repository code or create f
 - PostgreSQL durable queue with leases, three attempts, exponential backoff, and run-level deduplication.
 - GitHub App installation authentication implemented in Go with short-lived installation tokens.
 - PR metadata and changed-file retrieval.
-- Go-native bounded symbol indexing for changed Go, Java, Kotlin, Python,
+- Java-native bounded symbol indexing for changed Go, Java, Kotlin, Python,
   TypeScript, JavaScript, C#, C, C++, Rust, PHP, Ruby, and Swift files.
 - Stable symbols for files, functions, methods, types, classes, interfaces,
   structs, protocols, traits, modules, aliases, and enums.
@@ -76,29 +76,28 @@ The current milestone intentionally does not execute repository code or create f
 
 ## Prerequisites
 
-- Go 1.27 or newer for the API, worker, and migration binaries.
+- Java 17 and Maven 3.9 or newer for the API, worker, and migration runner.
 - Node.js 24 and npm 11 for benchmark, labeling, compatibility, and operations tooling.
 - PostgreSQL 17.
 - A GitHub App for real repository integration.
 
-## Go migration status
+## Java runtime status
 
-Go is the primary runtime language. The webhook API, configuration, HMAC security,
-PostgreSQL persistence, durable queue, GitHub App client, deterministic summary,
-risk rules, Check Run publication, and migration command live under `cmd/` and
-`internal/`.
+Java 17 with Spring Boot is the primary runtime. The webhook API, configuration,
+HMAC security, PostgreSQL persistence, durable queue, GitHub App client,
+repository policy, code intelligence, deterministic and optional model review,
+Check Run publication, and migration runner live under `src/main/java`.
 
-Repository policy, changed-file symbol indexing, bounded impact traversal,
-OpenAI-compatible summary/risk generation, exact-line evidence verification, and
-LLM telemetry now run in Go. The TypeScript packages remain temporarily for the
-benchmark workbench, lifecycle operations, compatibility tests, and the explicit
-`npm run legacy:worker` rollback path; they are not part of the default worker.
+The former Go runtime remains temporarily under `cmd/` and `internal/` through
+the explicit `legacy:go:*` commands for rollback comparison only. TypeScript
+remains for the benchmark workbench, lifecycle operations, compatibility tests,
+and the explicit `legacy:*` rollback path; neither is part of the default API or worker.
 
 ## Local setup
 
 ```bash
 npm install
-go mod download
+mvn dependency:go-offline
 docker compose -f infra/compose.yml up -d
 copy .env.example .env
 npm run db:migrate
@@ -150,7 +149,7 @@ Follow [INSTALLATION.md](INSTALLATION.md), then start the dependency-gated stack
 docker compose -f infra/compose.production.yml up -d --build
 ```
 
-The image runs compiled Go API, worker, and migration binaries as the non-root `node` user. It retains the compiled TypeScript operational tools during the migration window. Migration completion gates API and worker startup. Operational retention is available through the `operations` Compose profile; backup, deletion, and rollback procedures are documented in [OPERATIONS.md](OPERATIONS.md).
+The image runs the Java API, worker, and migration modes as the non-root `codelens` user. It retains compiled TypeScript operational tools during the migration window. Migration completion gates API and worker startup. Operational retention is available through the `operations` Compose profile; backup, deletion, and rollback procedures are documented in [OPERATIONS.md](OPERATIONS.md).
 
 For a local, single-machine beta with an automatically managed temporary HTTPS
 tunnel, use `npm run beta:local`. See [INSTALLATION.md](INSTALLATION.md) for the
@@ -320,7 +319,7 @@ The default lifecycle keeps terminal reviews and model telemetry for 90 days and
 
 - The index is a PR delta, so callers in unchanged files are not visible yet; every output carries this warning.
 - Calls resolved within the same file or through direct imports have stronger confidence; dynamic calls remain explicit `unresolved:` targets.
-- The Go-native multi-language indexer deliberately uses bounded declaration and
+- The Java-native multi-language indexer deliberately uses bounded declaration and
   direct-call parsers rather than full compilers. It recognizes common declarations,
   nested type/method scopes, and uniquely resolvable calls, while overload dispatch,
   reflection, generated code, macros, Ruby calls without parentheses, and dynamic

@@ -1,6 +1,6 @@
 # ADR 0004: Go runtime foundation
 
-Status: accepted, 2026-09-21
+Status: superseded by ADR 0006, 2026-09-25
 
 ## Context
 

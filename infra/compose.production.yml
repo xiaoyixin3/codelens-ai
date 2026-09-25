@@ -23,7 +23,7 @@ services:
         required: false
     environment:
       DATABASE_URL: postgres://codelens:${POSTGRES_PASSWORD}@postgres:5432/codelens
-    command: ["/app/codelens-migrate"]
+    command: ["java", "-Dcodelens.mode=migrate", "-jar", "/app/codelens-ai.jar"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -37,7 +37,7 @@ services:
         required: false
     environment:
       DATABASE_URL: postgres://codelens:${POSTGRES_PASSWORD}@postgres:5432/codelens
-    command: ["/app/codelens-api"]
+    command: ["java", "-Dcodelens.mode=api", "-jar", "/app/codelens-ai.jar"]
     ports:
       - "${PORT:-3000}:3000"
     healthcheck:
@@ -58,7 +58,7 @@ services:
         required: false
     environment:
       DATABASE_URL: postgres://codelens:${POSTGRES_PASSWORD}@postgres:5432/codelens
-    command: ["/app/codelens-worker"]
+    command: ["java", "-Dcodelens.mode=worker", "-jar", "/app/codelens-ai.jar"]
     depends_on:
       migrate:
         condition: service_completed_successfully

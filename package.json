@@ -12,13 +12,16 @@
     "node": ">=24"
   },
   "scripts": {
-    "dev:api": "go run ./cmd/api",
-    "dev:worker": "go run ./cmd/worker",
-    "start:api": "go run ./cmd/api",
-    "start:worker": "go run ./cmd/worker",
+    "dev:api": "mvn -q -DskipTests package && java -Dcodelens.mode=api -jar target/codelens-ai.jar",
+    "dev:worker": "mvn -q -DskipTests package && java -Dcodelens.mode=worker -jar target/codelens-ai.jar",
+    "start:api": "java -Dcodelens.mode=api -jar target/codelens-ai.jar",
+    "start:worker": "java -Dcodelens.mode=worker -jar target/codelens-ai.jar",
+    "legacy:go:api": "go run ./cmd/api",
+    "legacy:go:worker": "go run ./cmd/worker",
+    "legacy:go:migrate": "go run ./cmd/migrate",
     "legacy:api": "tsx apps/api/src/main.ts",
     "legacy:worker": "tsx apps/worker/src/main.ts",
-    "build": "go build ./cmd/...",
+    "build": "mvn -q -DskipTests package",
     "build:legacy": "tsup",
     "typecheck": "tsc --noEmit",
     "security:scan": "node --import tsx scripts/scan-secrets.ts",
@@ -37,10 +40,10 @@
     "beta:local": "node --env-file-if-exists=.env --import tsx scripts/local-beta.ts",
     "smoke:pipeline": "node --env-file-if-exists=.env --import tsx scripts/smoke-pipeline.ts",
     "github:preflight": "node --env-file-if-exists=.env --import tsx scripts/github-preflight.ts",
-    "db:migrate": "go run ./cmd/migrate",
+    "db:migrate": "mvn -q -DskipTests package && java -Dcodelens.mode=migrate -jar target/codelens-ai.jar",
     "data:retain": "tsx scripts/retention.ts",
     "data:delete": "tsx scripts/delete-repository-data.ts",
-    "release:check": "npm run security:scan && go test ./... && npm run typecheck && npm test && npm run build && npm run build:legacy && tsx scripts/release-check.ts"
+    "release:check": "npm run security:scan && mvn -q test && npm run typecheck && npm test && npm run build && npm run build:legacy && tsx scripts/release-check.ts"
   },
   "dependencies": {
     "@fastify/rate-limit": "^11.2.0",
