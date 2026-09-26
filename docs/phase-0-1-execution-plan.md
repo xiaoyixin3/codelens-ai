@@ -85,9 +85,10 @@ selected Java repositories and unchanged-file caller/test discovery is proven.
 
 Foundation status on 2026-09-26: B1–B4 are implemented behind standalone
 contracts and tests. Synthetic truth-set and self-repository acceptance evidence
-pass. B5 remains open because the required independently labelled, selected real
-Java repository truth set does not yet exist, and the semantic path is not yet
-connected to GitHub publication.
+pass. A fixed-revision Gson source-file truth set also passes 16/16, but was
+labelled by the implementer and covers only one repository. B5 remains open
+because independently labelled, selected real Java repository evidence is still
+required, and the semantic path is not yet connected to GitHub publication.
 
 ## Merge sequence
 

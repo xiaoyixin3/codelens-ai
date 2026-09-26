@@ -37,7 +37,11 @@ public final class SemanticModels {
             boolean typeResolved
     ) {}
 
-    public record FileStatus(String path, String status, String reason, String contentHash) {}
+    public record FileStatus(String path, String status, String reason, String contentHash, boolean reused) {
+        public FileStatus(String path, String status, String reason, String contentHash) {
+            this(path, status, reason, contentHash, false);
+        }
+    }
 
     public record Coverage(
             CoverageLevel level,

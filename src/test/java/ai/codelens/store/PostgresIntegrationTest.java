@@ -3,6 +3,9 @@ package ai.codelens.store;
 import ai.codelens.config.DotEnv;
 import ai.codelens.config.RuntimeConfig;
 import ai.codelens.contracts.Models;
+import ai.codelens.semantic.JdbcSemanticSnapshotStore;
+import ai.codelens.semantic.SemanticModels;
+import ai.codelens.semantic.SemanticSnapshotStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
@@ -10,6 +13,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -47,11 +52,26 @@ class PostgresIntegrationTest {
             provider = providers.rotate(installation, providerId, "rotated", "sha256:rotated", 1, "integration-test");
             assertEquals("sha256:rotated", provider.credentialFingerprint());
             assertEquals("succeeded", providers.recordTest(installation, providerId, "succeeded", "", "integration-test").lastTestStatus());
+
+            JdbcSemanticSnapshotStore semantic = new JdbcSemanticSnapshotStore(jdbc, dataSource, json);
+            SemanticSnapshotStore.Key semanticKey = new SemanticSnapshotStore.Key(Long.toString(repository),
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "integration-adapter-v1", "integration-build-v1");
+            SemanticModels.Symbol symbol = new SemanticModels.Symbol("java:type:integration.Fixture",
+                    SemanticModels.SymbolKind.TYPE, "integration.Fixture", "Fixture",
+                    "src/main/java/integration/Fixture.java", 1, 2, false, true);
+            SemanticModels.Index semanticIndex = new SemanticModels.Index(semanticKey.commitSha(), semanticKey.adapterVersion(),
+                    semanticKey.buildModelHash(), List.of(new SemanticModels.FileStatus(symbol.path(), "indexed", "", "hash", true)),
+                    List.of(symbol), List.of(), new SemanticModels.Coverage(SemanticModels.CoverageLevel.SEMANTIC,
+                    1, 1, 0, 0, 1, 0, 0, Map.of("incremental_reused_file", 1L)));
+            semantic.save(semanticKey, semanticIndex);
+            assertEquals(semanticIndex, semantic.load(semanticKey).orElseThrow());
+
             providers.delete(installation, providerId, "integration-test"); assertTrue(providers.list(installation).isEmpty());
         } finally {
             try (HikariDataSource cleanup = new HikariDataSource(pool)) {
                 JdbcTemplate jdbc = new JdbcTemplate(cleanup);
                 if (runId != null) jdbc.update("DELETE FROM review_runs WHERE id=?::uuid", runId);
+                jdbc.update("DELETE FROM repository_snapshots WHERE github_repository_id=?", repository);
                 jdbc.update("DELETE FROM provider_connections WHERE installation_id=?", installation);
                 jdbc.update("DELETE FROM github_repositories WHERE id=?", repository);
                 jdbc.update("DELETE FROM github_installations WHERE id=?", installation);

@@ -129,7 +129,9 @@ public final class JavaSemanticAdapter implements SemanticAdapter {
         }
         if (expanded) changed = indexSelected(repositoryRoot, commitSha, buildModel, affected);
         List<SemanticModels.FileStatus> files = new ArrayList<>();
-        base.files().stream().filter(file -> !affected.contains(file.path())).forEach(files::add);
+        base.files().stream().filter(file -> !affected.contains(file.path()))
+                .map(file -> new SemanticModels.FileStatus(file.path(), file.status(), file.reason(), file.contentHash(), true))
+                .forEach(files::add);
         files.addAll(changed.files());
         files.sort(Comparator.comparing(SemanticModels.FileStatus::path));
 

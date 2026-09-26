@@ -48,6 +48,14 @@ positive or missed relationship). Separate tests cover inheritance,
 implementation, override, field read/write, declared/thrown/caught exceptions,
 snapshot provenance, safe cleanup, and incremental unresolved-to-resolved calls.
 
+A fixed-revision real-source evaluation over Gson's `JsonParser.java` achieved
+exact agreement on 16/16 manually curated internal calls (100% scoped precision
+and recall) after indexing all 263 Java files with zero parse failures. The full
+result and its limitations are recorded in
+[`phase-1-gson-truth-set-2026-09-26.md`](phase-1-gson-truth-set-2026-09-26.md).
+This is useful engineering evidence but is not independently labelled and does
+not by itself satisfy the multi-repository product exit gate.
+
 A full semantic acceptance run against this repository indexed 43 Java files,
 599 symbols, and 9,229 relationships with zero parse failures; 9,183
 relationships were type-resolved and 46 remained explicit unresolved evidence.
@@ -58,16 +66,20 @@ precision evidence.
 
 Phase 1 is **not complete** because:
 
-1. The ≥90% direct-call precision threshold has not been measured against an
-   independently labelled truth set from selected real Java repositories.
+1. The ≥90% direct-call precision threshold has not been measured against
+   independently labelled truth sets from selected real Java repositories. One
+   implementer-labelled Gson source-file set passes exactly, but cannot close
+   this gate.
 2. The self-repository acceptance run proves full-repository reach and finds
    callers/tests in unchanged files, but it is not an independent precision set.
 3. Maven/Gradle dependency classpaths and custom source layouts are not yet loaded;
    external-library relationships may remain explicitly unresolved.
 4. The semantic path is not yet wired into the production GitHub worker. Published
    reviews continue to use and clearly report the diff-only fallback.
-5. Persistent database read/write integration and an enabled-by-policy rollout
-   path still require implementation and migration testing against PostgreSQL.
+5. JDBC snapshot read/write is implemented and covered by the opt-in PostgreSQL
+   integration test, but the local Docker service was unavailable, so the new
+   database path is not yet backed by an executed PostgreSQL result. An
+   enabled-by-policy rollout path also remains open.
 
 ## Decision
 
