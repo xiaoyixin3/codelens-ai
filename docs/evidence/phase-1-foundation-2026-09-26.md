@@ -56,6 +56,14 @@ result and its limitations are recorded in
 This is useful engineering evidence but is not independently labelled and does
 not by itself satisfy the multi-repository product exit gate.
 
+The independent evidence path is now fail-closed and documented in
+[`../phase-1-truth-set-contract.md`](../phase-1-truth-set-contract.md). It accepts
+external JSON labels without adapter changes, requires two distinct reviewers
+who did not see predictions, verifies conflict adjudication and fixed
+commit/adapter provenance, and requires at least two repositories with ≥90%
+precision both per repository and in aggregate. No qualifying external dataset
+has been supplied, so this contract does not change the open exit decision.
+
 A full semantic acceptance run against this repository indexed 43 Java files,
 599 symbols, and 9,229 relationships with zero parse failures; 9,183
 relationships were type-resolved and 46 remained explicit unresolved evidence.

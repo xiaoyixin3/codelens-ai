@@ -88,7 +88,10 @@ contracts and tests. Synthetic truth-set and self-repository acceptance evidence
 pass. A fixed-revision Gson source-file truth set also passes 16/16, but was
 labelled by the implementer and covers only one repository. B5 remains open
 because independently labelled, selected real Java repository evidence is still
-required, and the semantic path is not yet connected to GitHub publication.
+required. A fail-closed external truth-set contract and opt-in multi-repository
+runner are ready to receive that evidence. The semantic path is not yet connected
+to GitHub publication because the production Worker does not yet have a safe,
+authenticated archive source for the S1 materializer.
 
 ## Merge sequence
 

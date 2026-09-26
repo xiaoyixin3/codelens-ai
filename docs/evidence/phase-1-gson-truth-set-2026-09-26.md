@@ -5,7 +5,7 @@ Status: engineering evidence; not independent product-exit evidence
 - Repository: `google/gson`
 - License: Apache-2.0
 - Pinned commit: `854c8255b625cf1e13c701a83ea9ccb4caaa576a`
-- Adapter: `javaparser-symbol-solver-3.28.2-v1`
+- Adapter: `javaparser-3.28.2-v1`
 
 ## Scope and method
 
