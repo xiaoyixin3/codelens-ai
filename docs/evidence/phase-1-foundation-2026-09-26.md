@@ -37,7 +37,7 @@ The release-level check passed after implementation:
 - secret scan: clean;
 - Java unit/acceptance suite: passed (database integration remains opt-in);
 - TypeScript typecheck: passed;
-- TypeScript/Vitest: 12 files, 65 tests passed;
+- TypeScript/Vitest: 12 files, 66 tests passed;
 - Java and legacy TypeScript builds: passed;
 - forward migration ordering and release artifact check: passed.
 
@@ -73,9 +73,18 @@ gold exit gate. On the fixed Gson scope, the two implementations agreed on all
 16/16 facts, reducing a one-in-ten audit queue to two facts while retaining 93
 compiler diagnostics caused by unavailable generated/external inputs.
 
-A full semantic acceptance run against this repository indexed 43 Java files,
-599 symbols, and 9,229 relationships with zero parse failures; 9,183
-relationships were type-resolved and 46 remained explicit unresolved evidence.
+A second fixed-revision development run against JUnit 4 `r4.13.2` initially
+exposed generic-signature comparison noise, unstable anonymous owners, and seven
+real missing relationships. Adapter v2 now uses deterministic anonymous symbols,
+indexes explicit superclass/this constructor calls, represents annotation members
+as callables, and resolves unique repository-member fallbacks. The unchanged
+JUnit scope finishes with 105/105 target-call agreement and an 11-item audit
+sample. Details and the explicit non-gold interpretation are in
+[`phase-1-junit4-silver-2026-09-26.md`](phase-1-junit4-silver-2026-09-26.md).
+
+A full semantic acceptance run against this repository indexed 53 Java files,
+746 symbols, and 13,146 relationships with zero parse failures; 13,094
+relationships were type-resolved and 52 remained explicit unresolved evidence.
 These adapter-version-specific counts are engineering diagnostics, not product
 precision evidence.
 

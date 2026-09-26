@@ -6,6 +6,8 @@ import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.body.CallableDeclaration;
+import com.github.javaparser.ast.body.AnnotationDeclaration;
+import com.github.javaparser.ast.body.AnnotationMemberDeclaration;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.ConstructorDeclaration;
 import com.github.javaparser.ast.body.EnumDeclaration;
@@ -21,6 +23,7 @@ import com.github.javaparser.ast.expr.NameExpr;
 import com.github.javaparser.ast.expr.ObjectCreationExpr;
 import com.github.javaparser.ast.expr.UnaryExpr;
 import com.github.javaparser.ast.stmt.CatchClause;
+import com.github.javaparser.ast.stmt.ExplicitConstructorInvocationStmt;
 import com.github.javaparser.ast.stmt.ThrowStmt;
 import com.github.javaparser.ast.nodeTypes.NodeWithAnnotations;
 import com.github.javaparser.ast.type.ClassOrInterfaceType;
@@ -69,7 +72,7 @@ import static ai.codelens.semantic.SemanticModels.RelationType.THROWS;
 import static ai.codelens.semantic.SemanticModels.RelationType.WRITES;
 
 public final class JavaSemanticAdapter implements SemanticAdapter {
-    public static final String ADAPTER_VERSION = "javaparser-3.28.2-v1";
+    public static final String ADAPTER_VERSION = "javaparser-3.28.2-v2";
     private static final Set<String> EXCLUDED_DIRECTORIES = Set.of(
             ".git", ".gradle", ".idea", "target", "build", "node_modules", "dist", "out"
     );
@@ -244,7 +247,7 @@ public final class JavaSemanticAdapter implements SemanticAdapter {
             extractOverrides(unit, symbolByNode, relationships, degradations);
             extractExceptionRelationships(unit, symbolByNode, relationships, degradations);
             extractAnnotations(unit, symbolByNode, relationships);
-            extractCalls(unit, symbolByNode, relationships, degradations);
+            extractCalls(unit, symbolByNode, symbolByKey, relationships, degradations);
             extractFieldAccess(unit, symbolByNode, relationships, degradations);
         }
         addTestRelationships(relationships, symbolByKey);
@@ -288,6 +291,17 @@ public final class JavaSemanticAdapter implements SemanticAdapter {
                     unit.path(), begin(method), end(method), unit.testSource(), resolved.resolved()),
                     method, symbols, symbolByNode, symbolByKey);
             if (!resolved.resolved()) degradations.merge("unresolved_declaration", 1L, Long::sum);
+        }
+        for (AnnotationMemberDeclaration member : unit.compilationUnit().findAll(AnnotationMemberDeclaration.class)) {
+            AnnotationDeclaration annotation = member.findAncestor(AnnotationDeclaration.class).orElseThrow();
+            ResolvedName owner = resolve(() -> annotation.resolve().getQualifiedName(), () -> astTypeName(annotation));
+            String key = "java:method:" + owner.name() + "#" + member.getNameAsString() + "()";
+            putSymbol(new SemanticModels.Symbol(key, SemanticModels.SymbolKind.METHOD,
+                            owner.name() + "." + member.getNameAsString(),
+                            member.getTypeAsString() + " " + member.getNameAsString() + "()", unit.path(),
+                            begin(member), end(member), unit.testSource(), owner.resolved()),
+                    member, symbols, symbolByNode, symbolByKey);
+            if (!owner.resolved()) degradations.merge("unresolved_declaration", 1L, Long::sum);
         }
         for (ConstructorDeclaration constructor : unit.compilationUnit().findAll(ConstructorDeclaration.class)) {
             ResolvedConstructor resolved = resolveConstructor(constructor);
@@ -447,13 +461,13 @@ public final class JavaSemanticAdapter implements SemanticAdapter {
     }
 
     private static void extractCalls(Unit unit, Map<Node, String> symbolByNode,
+                                     Map<String, SemanticModels.Symbol> symbolByKey,
                                      Map<String, SemanticModels.Relationship> relationships,
                                      Map<String, Long> degradations) {
         for (MethodCallExpr call : unit.compilationUnit().findAll(MethodCallExpr.class)) {
             String from = enclosingCallable(call, symbolByNode);
             if (from == null) continue;
-            ResolvedName target = resolve(() -> methodKey(call.resolve()),
-                    () -> "unresolved:method:" + call.getNameAsString() + "/" + call.getArguments().size());
+            ResolvedName target = resolveMethodCall(call, symbolByKey);
             add(relationships, new SemanticModels.Relationship(from, target.name(), CALLS, unit.path(), begin(call),
                     target.resolved() ? 1.0 : 0.0, target.resolved()));
             if (!target.resolved()) degradations.merge("unresolved_call", 1L, Long::sum);
@@ -466,6 +480,72 @@ public final class JavaSemanticAdapter implements SemanticAdapter {
                     target.resolved() ? 1.0 : 0.0, target.resolved()));
             if (!target.resolved()) degradations.merge("unresolved_call", 1L, Long::sum);
         }
+        for (ExplicitConstructorInvocationStmt call : unit.compilationUnit().findAll(ExplicitConstructorInvocationStmt.class)) {
+            String from = enclosingCallable(call, symbolByNode);
+            if (from == null) continue;
+            ResolvedName target = resolve(() -> constructorKey(call.resolve()),
+                    () -> "unresolved:constructor:" + (call.isThis() ? "this" : "super") + "/" + call.getArguments().size());
+            add(relationships, new SemanticModels.Relationship(from, target.name(), CALLS, unit.path(), begin(call),
+                    target.resolved() ? 1.0 : 0.0, target.resolved()));
+            if (!target.resolved()) degradations.merge("unresolved_call", 1L, Long::sum);
+        }
+    }
+
+    private static ResolvedName resolveMethodCall(MethodCallExpr call, Map<String, SemanticModels.Symbol> symbolByKey) {
+        try {
+            return new ResolvedName(methodKey(call.resolve()), true);
+        } catch (RuntimeException directFailure) {
+            if (call.getScope().isEmpty()) {
+                return new ResolvedName("unresolved:method:" + call.getNameAsString() + "/" + call.getArguments().size(), false);
+            }
+            String receiverType = "";
+            try {
+                var referenceType = call.getScope().orElseThrow().calculateResolvedType().asReferenceType();
+                receiverType = referenceType.getQualifiedName();
+                if (referenceType.getTypeDeclaration().isPresent()) {
+                    List<ResolvedMethodDeclaration> candidates = referenceType.getTypeDeclaration().orElseThrow().getAllMethods().stream()
+                            .map(usage -> usage.getDeclaration())
+                            .filter(method -> method.getName().equals(call.getNameAsString()))
+                            .filter(method -> method.getNumberOfParams() == call.getArguments().size())
+                            .distinct()
+                            .toList();
+                    if (candidates.size() == 1) return new ResolvedName(methodKey(candidates.get(0)), true);
+                }
+            } catch (RuntimeException ignored) {
+                try {
+                    if (call.getScope().orElseThrow() instanceof NameExpr name) {
+                        receiverType = name.resolve().getType().describe();
+                    }
+                } catch (RuntimeException alsoIgnored) {
+                    // Repository-symbol fallback below remains fail-closed when the receiver type is unavailable.
+                }
+            }
+            String qualifiedName = receiverType + "." + call.getNameAsString();
+            List<SemanticModels.Symbol> repositoryCandidates = symbolByKey.values().stream()
+                    .filter(symbol -> symbol.kind() == SemanticModels.SymbolKind.METHOD)
+                    .filter(symbol -> symbol.qualifiedName().equals(qualifiedName))
+                    .filter(symbol -> methodParameterCount(symbol.stableKey()) == call.getArguments().size())
+                    .toList();
+            if (repositoryCandidates.size() == 1) return new ResolvedName(repositoryCandidates.get(0).stableKey(), true);
+            return new ResolvedName("unresolved:method:" + call.getNameAsString() + "/" + call.getArguments().size(), false);
+        }
+    }
+
+    private static int methodParameterCount(String stableKey) {
+        int open = stableKey.lastIndexOf('(');
+        int close = stableKey.lastIndexOf(')');
+        if (open < 0 || close < open) return -1;
+        String parameters = stableKey.substring(open + 1, close);
+        if (parameters.isBlank()) return 0;
+        int count = 1;
+        int genericDepth = 0;
+        for (int index = 0; index < parameters.length(); index++) {
+            char current = parameters.charAt(index);
+            if (current == '<') genericDepth++;
+            else if (current == '>') genericDepth--;
+            else if (current == ',' && genericDepth == 0) count++;
+        }
+        return count;
     }
 
     private static void extractFieldAccess(Unit unit, Map<Node, String> symbolByNode,
@@ -551,12 +631,27 @@ public final class JavaSemanticAdapter implements SemanticAdapter {
     private static ResolvedMethod resolveMethod(MethodDeclaration method) {
         try {
             ResolvedMethodDeclaration resolved = method.resolve();
-            return new ResolvedMethod(methodKey(resolved), resolved.declaringType().getQualifiedName(), true);
+            String owner = stableMethodOwner(method, resolved.declaringType().getQualifiedName());
+            String key = "java:method:" + owner + "#" + resolved.getName() + "(" + parameters(resolved) + ")";
+            return new ResolvedMethod(key, owner, true);
         } catch (RuntimeException exception) {
-            String owner = method.findAncestor(TypeDeclaration.class).map(JavaSemanticAdapter::astTypeName).orElse("<unknown>");
+            String fallback = method.findAncestor(TypeDeclaration.class).map(JavaSemanticAdapter::astTypeName).orElse("<unknown>");
+            String owner = stableMethodOwner(method, fallback);
             String params = method.getParameters().stream().map(parameter -> parameter.getTypeAsString()).collect(java.util.stream.Collectors.joining(","));
             return new ResolvedMethod("java:method:" + owner + "#" + method.getNameAsString() + "(" + params + ")", owner, false);
         }
+    }
+
+    private static String stableMethodOwner(MethodDeclaration method, String resolvedOwner) {
+        var anonymous = method.findAncestor(ObjectCreationExpr.class)
+                .filter(creation -> creation.getAnonymousClassBody().isPresent());
+        if (anonymous.isEmpty() && !resolvedOwner.contains(".Anonymous-")) return resolvedOwner;
+        ObjectCreationExpr creation = anonymous.orElse(null);
+        String outer = creation == null
+                ? method.findAncestor(TypeDeclaration.class).map(JavaSemanticAdapter::astTypeName).orElse("<unknown>")
+                : creation.findAncestor(TypeDeclaration.class).map(JavaSemanticAdapter::astTypeName).orElse("<unknown>");
+        int line = creation == null ? begin(method) : begin(creation);
+        return outer + "$anonymous@" + line;
     }
 
     private static ResolvedConstructor resolveConstructor(ConstructorDeclaration constructor) {

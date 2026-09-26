@@ -99,6 +99,13 @@ content-addressed context and inspect disagreements plus an agreement sample;
 only qualified, prediction-blind gold labels can affect the formal exit gate.
 The project owner is not expected to perform specialist Java labelling.
 
+The second real-repository silver run (JUnit 4 `r4.13.2`) found seven concrete
+adapter gaps after normalization noise was removed. Adapter v2 fixes explicit
+constructor invocations, annotation-member calls, and anonymous symbol stability;
+the frozen scope now has 105/105 target-call agreement. Because the repository
+was used to develop these fixes, it is development evidence rather than holdout
+evidence and does not close B5.
+
 ## Merge sequence
 
 1. Baseline/ADR/evidence report and regression baseline.

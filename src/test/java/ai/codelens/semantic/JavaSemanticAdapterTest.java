@@ -230,6 +230,63 @@ class JavaSemanticAdapterTest {
         assertEquals(expectedInternalCalls, actual, "synthetic direct-call truth set must have neither false positives nor misses");
     }
 
+    @Test
+    void anonymousClassSymbolsRemainStableAcrossIndependentIndexes() throws Exception {
+        write("src/main/java/example/AnonymousCaller.java", """
+                package example;
+                public final class AnonymousCaller {
+                    public Runnable task() {
+                        return new Runnable() {
+                            @Override public void run() { new Receipt("anonymous"); }
+                        };
+                    }
+                }
+                """);
+        JavaSemanticAdapter adapter = new JavaSemanticAdapter();
+        BuildModel model = new BuildModelDetector().detect(repository);
+        SemanticModels.Index first = adapter.index(repository,
+                "9999999999999999999999999999999999999999", model);
+        SemanticModels.Index second = adapter.index(repository,
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", model);
+        Set<String> firstKeys = first.symbols().stream().map(SemanticModels.Symbol::stableKey)
+                .filter(key -> key.contains("anonymous")).collect(java.util.stream.Collectors.toSet());
+        Set<String> secondKeys = second.symbols().stream().map(SemanticModels.Symbol::stableKey)
+                .filter(key -> key.contains("anonymous")).collect(java.util.stream.Collectors.toSet());
+
+        assertEquals(firstKeys, secondKeys);
+        assertTrue(firstKeys.stream().anyMatch(key -> key.contains("$anonymous@")));
+        assertFalse(firstKeys.stream().anyMatch(key -> key.matches(".*Anonymous-[0-9a-fA-F-]{36}.*")));
+    }
+
+    @Test
+    void resolvesExplicitSuperConstructorsAndAnnotationMemberCalls() throws Exception {
+        write("src/main/java/example/Base.java", """
+                package example;
+                public class Base { public Base(String value) {} }
+                """);
+        write("src/main/java/example/Marker.java", """
+                package example;
+                public @interface Marker { int order(); }
+                """);
+        write("src/main/java/example/Specialized.java", """
+                package example;
+                public final class Specialized extends Base {
+                    public Specialized() { super("value"); }
+                    public int order(Marker marker) { return marker.order(); }
+                }
+                """);
+        SemanticModels.Index index = new JavaSemanticAdapter().index(repository,
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", new BuildModelDetector().detect(repository));
+
+        assertTrue(index.relationships().stream().anyMatch(edge -> edge.type() == CALLS && edge.typeResolved()
+                && edge.fromStableKey().equals("java:constructor:example.Specialized#<init>()")
+                && edge.toStableKey().equals("java:constructor:example.Base#<init>(java.lang.String)")));
+        assertTrue(index.relationships().stream().anyMatch(edge -> edge.type() == CALLS && edge.typeResolved()
+                && edge.fromStableKey().equals("java:method:example.Specialized#order(example.Marker)")
+                && edge.toStableKey().equals("java:method:example.Marker#order()")), () -> index.relationships().stream()
+                .filter(edge -> edge.sourcePath().endsWith("Specialized.java")).toList().toString());
+    }
+
     private static String displayCall(SemanticModels.Relationship edge) {
         return edge.fromStableKey().replaceFirst("java:(?:method|constructor):", "") + "->"
                 + edge.toStableKey().replaceFirst("java:(?:method|constructor):", "");

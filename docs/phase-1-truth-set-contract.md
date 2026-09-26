@@ -5,6 +5,7 @@ Status: ready for external labelling; no qualifying datasets committed yet
 - Gate implementation: `SemanticTruthSetEvaluator`
 - Opt-in runner: `ExternalSemanticTruthSetGateTest`
 - Development oracle: `JavacCallOracle`
+- Packet builder: `SemanticReviewPacketBuilder`
 
 ## Purpose
 
@@ -31,7 +32,7 @@ Each dataset JSON maps directly to `SemanticTruthSetEvaluator.Dataset`:
   "repository": "owner/name",
   "commitSha": "40-character commit SHA",
   "license": "SPDX or reviewed license name",
-  "adapterVersion": "javaparser-3.28.2-v1",
+  "adapterVersion": "javaparser-3.28.2-v2",
   "context": {
     "id": "repository-one-context-v1",
     "digest": "64-character SHA-256 digest",
@@ -179,3 +180,9 @@ and repository build execution. The daily workflow is:
 5. keep the sealed gold holdout unavailable until the release decision.
 
 Compiler-oracle agreement is not human gold and cannot pass the Phase 1 exit gate.
+
+`SemanticReviewPacketBuilder` groups disagreements by source location, adds a
+bounded five-line excerpt, and includes both tool targets only in silver packets.
+Gold packets contain content-addressed scope files and instructions but have no
+adapter/oracle target fields. Tests inspect serialized gold JSON to prevent
+prediction fields from leaking back into blind review.

@@ -105,10 +105,12 @@ public final class JavacCallOracle {
                 .filter(edge -> edge.type() == SemanticModels.RelationType.CALLS && edge.typeResolved())
                 .filter(edge -> sourcePaths.contains(edge.sourcePath()))
                 .filter(edge -> targetPrefixes.stream().anyMatch(edge.toStableKey()::startsWith))
-                .map(edge -> new SemanticTruthSetEvaluator.CallFact(
-                        edge.sourcePath(), edge.sourceLine(), edge.fromStableKey(), edge.toStableKey()))
+                .map(edge -> canonicalFact(new SemanticTruthSetEvaluator.CallFact(
+                        edge.sourcePath(), edge.sourceLine(), edge.fromStableKey(), edge.toStableKey())))
                 .collect(java.util.stream.Collectors.toUnmodifiableSet());
-        Set<SemanticTruthSetEvaluator.CallFact> attributed = Set.copyOf(oracle.calls());
+        Set<SemanticTruthSetEvaluator.CallFact> attributed = oracle.calls().stream()
+                .map(JavacCallOracle::canonicalFact)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
         Set<SemanticTruthSetEvaluator.CallFact> agreements = intersection(adapter, attributed);
         Set<SemanticTruthSetEvaluator.CallFact> adapterOnly = difference(adapter, attributed);
         Set<SemanticTruthSetEvaluator.CallFact> oracleOnly = difference(attributed, adapter);
@@ -178,6 +180,43 @@ public final class JavacCallOracle {
         Path normalized = path.toAbsolutePath().normalize();
         if (!normalized.startsWith(root)) return normalized.toString().replace('\\', '/');
         return root.relativize(normalized).toString().replace('\\', '/');
+    }
+
+    private static SemanticTruthSetEvaluator.CallFact canonicalFact(SemanticTruthSetEvaluator.CallFact fact) {
+        // Source path + line identify the call site for silver target-resolution comparison.
+        // Exact caller identity remains part of the independent gold evaluator.
+        String from = "java:callsite:" + fact.sourcePath() + ":" + fact.line();
+        return new SemanticTruthSetEvaluator.CallFact(
+                fact.sourcePath(), fact.line(), from, canonicalKey(fact.toStableKey()));
+    }
+
+    private static String canonicalKey(String key) {
+        StringBuilder result = new StringBuilder();
+        int genericDepth = 0;
+        for (int index = 0; index < key.length(); index++) {
+            char current = key.charAt(index);
+            boolean constructorName = current == '<' && index > 0 && key.charAt(index - 1) == '#'
+                    && key.startsWith("<init>", index);
+            if (constructorName) {
+                result.append("<init>");
+                index += "<init>".length() - 1;
+            } else if (current == '<') {
+                genericDepth++;
+            } else if (current == '>' && genericDepth > 0) {
+                genericDepth--;
+            } else if (genericDepth == 0) {
+                result.append(current);
+            }
+        }
+        int open = result.lastIndexOf("(");
+        int close = result.lastIndexOf(")");
+        if (open < 0 || close < open) return result.toString();
+        String parameters = result.substring(open + 1, close);
+        if (parameters.isBlank()) return result.toString();
+        String normalized = java.util.Arrays.stream(parameters.split(",", -1))
+                .map(parameter -> parameter.matches("[A-Z][A-Za-z0-9_]*") ? "java.lang.Object" : parameter)
+                .collect(java.util.stream.Collectors.joining(","));
+        return result.substring(0, open + 1) + normalized + result.substring(close);
     }
 
     private static boolean unsafeRelativePath(String value) {

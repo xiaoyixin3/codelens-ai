@@ -5,7 +5,7 @@ Status: engineering evidence; not independent product-exit evidence
 - Repository: `google/gson`
 - License: Apache-2.0
 - Pinned commit: `854c8255b625cf1e13c701a83ea9ccb4caaa576a`
-- Adapter: `javaparser-3.28.2-v1`
+- Adapter: `javaparser-3.28.2-v2`
 
 ## Scope and method
 
@@ -31,8 +31,8 @@ repository remains an explicit opt-in input and is never downloaded by the test.
 - Recall: 100.00%
 - Indexed Java files: 263
 - Parse failures: 0
-- Repository-wide resolved relationships: 341,218
-- Repository-wide unresolved relationships: 444,848
+- Repository-wide resolved relationships: 341,637
+- Repository-wide unresolved relationships: 444,794
 
 An independent JDK compiler-attribution oracle emitted the same 16 scoped call
 facts, producing 100% tool agreement with the JavaParser adapter and no
