@@ -29,5 +29,8 @@ class ReviewEngineTest {
         Models.ChangeSummary summary = ReviewEngine.summarize(pull, "en", impact);
         assertEquals("high", summary.riskLevel());
         assertTrue(summary.overview().contains("+20/-2"));
+        assertEquals("diff-only/fallback", summary.coverage().analysisLevel());
+        assertEquals("S0", summary.coverage().executionLevel());
+        assertTrue(ReviewEngine.renderMarkdown(summary).contains("Callers and tests in unchanged files are not visible"));
     }
 }

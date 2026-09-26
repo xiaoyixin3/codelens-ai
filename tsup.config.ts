@@ -7,6 +7,7 @@ export default defineConfig({
     migrate: 'scripts/migrate.ts',
     'beta-readiness': 'scripts/beta-readiness.ts',
     'collect-positive-benchmark': 'scripts/collect-positive-benchmark.ts',
+    'phase0-evidence': 'scripts/phase0-evidence.ts',
     'benchmark-labeler': 'scripts/benchmark-labeler.ts',
     'local-beta': 'scripts/local-beta.ts',
     'github-preflight': 'scripts/github-preflight.ts',

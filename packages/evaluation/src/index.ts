@@ -65,6 +65,184 @@ export function isApprovedHistoricalReplayCase(item: ReplayCase): boolean {
   return item.approval.status === 'approved' && item.provenance.kind === 'historical_pr';
 }
 
+export const RootCauseEvidenceSchema = z.object({
+  path: z.string().trim().min(1),
+  startLine: z.number().int().positive(),
+  endLine: z.number().int().positive(),
+  side: z.enum(['LEFT', 'RIGHT']),
+  fact: z.string().trim().min(1).max(2_000)
+}).refine((value) => value.endLine >= value.startLine, {
+  message: 'endLine must be greater than or equal to startLine'
+});
+
+export const RootCauseLabelSchema = z.object({
+  rootCauseId: z.string().trim().min(1).max(160),
+  category: z.string().trim().min(1).max(80),
+  severity: z.enum(['critical', 'high', 'medium', 'low']),
+  claim: z.string().trim().min(1).max(2_000),
+  trigger: z.string().trim().min(1).max(2_000),
+  evidence: z.array(RootCauseEvidenceSchema).min(1),
+  acceptableFix: z.string().trim().min(1).max(2_000).optional(),
+  notes: z.string().trim().min(1).max(2_000).optional()
+});
+
+export type RootCauseLabel = z.infer<typeof RootCauseLabelSchema>;
+
+export const BlindRootCauseReviewSchema = z.object({
+  reviewerId: z.string().trim().min(2).max(120),
+  submittedAt: z.string().datetime({ offset: true }),
+  rootCauses: z.array(RootCauseLabelSchema)
+});
+
+export const Phase0CaseSchema = z.object({
+  id: z.string().trim().min(1),
+  repository: z.string().regex(/^[^/\s]+\/[^/\s]+$/),
+  pullNumber: z.number().int().positive(),
+  baseSha: z.string().regex(/^[0-9a-f]{40}$/i),
+  headSha: z.string().regex(/^[0-9a-f]{40}$/i),
+  provenance: z.object({
+    sourceUrl: z.string().url(),
+    repositoryLicense: z.string().trim().min(1),
+    permissionBasis: z.enum(['public_license', 'repository_owner_authorization']),
+    collectedAt: z.string().datetime({ offset: true })
+  }),
+  blindReviews: z.array(BlindRootCauseReviewSchema).min(2),
+  adjudication: z.object({
+    adjudicatedBy: z.string().trim().min(2).max(120),
+    adjudicatedAt: z.string().datetime({ offset: true }),
+    conflictCount: z.number().int().nonnegative(),
+    rootCauses: z.array(RootCauseLabelSchema)
+  })
+}).superRefine((value, context) => {
+  const reviewers = new Set(value.blindReviews.map((review) => review.reviewerId));
+  if (reviewers.size < 2) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['blindReviews'], message: 'Two distinct blind reviewers are required.' });
+  }
+  if (value.adjudication.conflictCount > 0 && reviewers.has(value.adjudication.adjudicatedBy)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['adjudication', 'adjudicatedBy'],
+      message: 'A third reviewer must adjudicate conflicts.'
+    });
+  }
+  const rootCauseIds = value.adjudication.rootCauses.map((rootCause) => rootCause.rootCauseId);
+  if (new Set(rootCauseIds).size !== rootCauseIds.length) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['adjudication', 'rootCauses'],
+      message: 'Adjudicated rootCauseId values must be unique within a case.'
+    });
+  }
+});
+
+export type Phase0Case = z.infer<typeof Phase0CaseSchema>;
+
+export const ReviewerSessionSchema = z.object({
+  caseId: z.string().trim().min(1),
+  reviewerId: z.string().trim().min(2).max(120),
+  arm: z.enum(['codelens', 'control']),
+  startedAt: z.string().datetime({ offset: true }),
+  completedAt: z.string().datetime({ offset: true }),
+  activeSeconds: z.number().positive().max(8 * 60 * 60),
+  decision: z.enum(['approve', 'request_changes', 'comment']),
+  excludedReason: z.string().trim().min(1).max(500).optional()
+}).superRefine((value, context) => {
+  if (Date.parse(value.completedAt) <= Date.parse(value.startedAt)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['completedAt'], message: 'completedAt must be after startedAt.' });
+  }
+});
+
+export type ReviewerSession = z.infer<typeof ReviewerSessionSchema>;
+
+export interface Phase0EvidenceThresholds {
+  minCases: number;
+  minPositiveRootCauses: number;
+  minTimedSessions: number;
+}
+
+export interface Phase0EvidenceReport {
+  passed: boolean;
+  cases: number;
+  positiveCases: number;
+  positiveRootCauses: number;
+  dualReviewedCases: number;
+  adjudicatedCases: number;
+  timedSessions: number;
+  timedCodelensSessions: number;
+  timedControlSessions: number;
+  failures: string[];
+  thresholds: Phase0EvidenceThresholds;
+}
+
+export function evaluatePhase0Evidence(
+  rawCases: unknown[],
+  rawSessions: unknown[],
+  thresholds: Phase0EvidenceThresholds = { minCases: 50, minPositiveRootCauses: 20, minTimedSessions: 20 }
+): Phase0EvidenceReport {
+  if (!Number.isInteger(thresholds.minCases) || thresholds.minCases <= 0) throw new Error('minCases must be positive.');
+  if (!Number.isInteger(thresholds.minPositiveRootCauses) || thresholds.minPositiveRootCauses <= 0) {
+    throw new Error('minPositiveRootCauses must be positive.');
+  }
+  if (!Number.isInteger(thresholds.minTimedSessions) || thresholds.minTimedSessions <= 1) {
+    throw new Error('minTimedSessions must be greater than one.');
+  }
+
+  const failures: string[] = [];
+  const cases: Phase0Case[] = [];
+  rawCases.forEach((value, index) => {
+    const parsed = Phase0CaseSchema.safeParse(value);
+    if (parsed.success) cases.push(parsed.data);
+    else failures.push(`case[${index}] invalid: ${parsed.error.issues.map((issue) => issue.message).join('; ')}`);
+  });
+  const sessions: ReviewerSession[] = [];
+  rawSessions.forEach((value, index) => {
+    const parsed = ReviewerSessionSchema.safeParse(value);
+    if (parsed.success) sessions.push(parsed.data);
+    else failures.push(`session[${index}] invalid: ${parsed.error.issues.map((issue) => issue.message).join('; ')}`);
+  });
+
+  const uniqueCases = new Map(cases.map((item) => [item.id, item]));
+  if (uniqueCases.size !== cases.length) failures.push('case ids must be unique.');
+  const knownCaseIds = new Set(uniqueCases.keys());
+  const eligibleSessions = sessions.filter((session) => !session.excludedReason);
+  for (const session of sessions) {
+    if (!knownCaseIds.has(session.caseId)) failures.push(`session references unknown case ${session.caseId}.`);
+  }
+  const uniqueSessionKeys = new Set(sessions.map((session) => `${session.caseId}\n${session.reviewerId}\n${session.arm}`));
+  if (uniqueSessionKeys.size !== sessions.length) failures.push('reviewer sessions must be unique by case, reviewer, and arm.');
+  const positiveCases = cases.filter((item) => item.adjudication.rootCauses.length > 0).length;
+  const positiveRootCauses = cases.reduce((sum, item) => sum + item.adjudication.rootCauses.length, 0);
+  const dualReviewedCases = cases.filter((item) => new Set(item.blindReviews.map((review) => review.reviewerId)).size >= 2).length;
+  const adjudicatedCases = cases.filter((item) => item.adjudication.adjudicatedBy.length > 0).length;
+  const timedCodelensSessions = eligibleSessions.filter((session) => session.arm === 'codelens').length;
+  const timedControlSessions = eligibleSessions.filter((session) => session.arm === 'control').length;
+
+  if (cases.length < thresholds.minCases) failures.push(`cases ${cases.length} < ${thresholds.minCases}`);
+  if (positiveRootCauses < thresholds.minPositiveRootCauses) {
+    failures.push(`positive root causes ${positiveRootCauses} < ${thresholds.minPositiveRootCauses}`);
+  }
+  if (dualReviewedCases !== cases.length) failures.push(`dual-reviewed cases ${dualReviewedCases} != ${cases.length}`);
+  if (adjudicatedCases !== cases.length) failures.push(`adjudicated cases ${adjudicatedCases} != ${cases.length}`);
+  if (eligibleSessions.length < thresholds.minTimedSessions) {
+    failures.push(`timed sessions ${eligibleSessions.length} < ${thresholds.minTimedSessions}`);
+  }
+  if (timedCodelensSessions === 0 || timedControlSessions === 0) failures.push('both codelens and control timing arms are required.');
+
+  return {
+    passed: failures.length === 0,
+    cases: cases.length,
+    positiveCases,
+    positiveRootCauses,
+    dualReviewedCases,
+    adjudicatedCases,
+    timedSessions: eligibleSessions.length,
+    timedCodelensSessions,
+    timedControlSessions,
+    failures,
+    thresholds
+  };
+}
+
 export function reverseUnifiedPatch(patch: string): string {
   return patch.split('\n').map((line) => {
     const hunk = line.match(/^@@ -(\d+(?:,\d+)?) \+(\d+(?:,\d+)?) @@(.*)$/);

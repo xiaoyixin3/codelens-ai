@@ -70,6 +70,11 @@ export class PostgresLifecycleStore implements LifecycleStore {
           )
         RETURNING id
       `;
+      const semanticSnapshots = await sql`
+        DELETE FROM repository_snapshots
+        WHERE created_at < ${cutoffs.snapshots}
+        RETURNING id
+      `;
       const deliveries = await sql`
         DELETE FROM webhook_deliveries
         WHERE received_at < ${cutoffs.webhooks}
@@ -82,7 +87,7 @@ export class PostgresLifecycleStore implements LifecycleStore {
       `;
       return {
         reviewRuns: runs.length,
-        snapshots: snapshots.length,
+        snapshots: snapshots.length + semanticSnapshots.length,
         webhookDeliveries: deliveries.length,
         llmCalls: calls.length
       };
@@ -104,6 +109,9 @@ export class PostgresLifecycleStore implements LifecycleStore {
       const snapshots = await sql`
         DELETE FROM code_snapshots WHERE github_repository_id = ${repositoryId} RETURNING id
       `;
+      const semanticSnapshots = await sql`
+        DELETE FROM repository_snapshots WHERE github_repository_id = ${repositoryId} RETURNING id
+      `;
       const rules = await sql`
         DELETE FROM project_rules WHERE github_repository_id = ${repositoryId} RETURNING id
       `;
@@ -119,13 +127,13 @@ export class PostgresLifecycleStore implements LifecycleStore {
           repository_records_deleted
         ) VALUES (
           ${receiptId}, ${repositoryHash}, ${requestedBy.slice(0, 200)}, ${runs.length},
-          ${snapshots.length}, ${rules.length}, ${calls.length}, ${repositoryRecords.length}
+          ${snapshots.length + semanticSnapshots.length}, ${rules.length}, ${calls.length}, ${repositoryRecords.length}
         )
       `;
       return {
         receiptId,
         reviewRuns: runs.length,
-        snapshots: snapshots.length,
+        snapshots: snapshots.length + semanticSnapshots.length,
         projectRules: rules.length,
         llmCalls: calls.length,
         repositoryRecords: repositoryRecords.length

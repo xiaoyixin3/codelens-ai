@@ -2,6 +2,13 @@
 
 Evidence-oriented intelligence for AI-generated pull requests.
 
+The project is now governed by the approved
+[`technical-baseline-v2.md`](docs/technical-baseline-v2.md). Phase 0 (a real,
+blind-labelled product baseline) and Phase 1 (safe repository materialization and
+deep Java whole-repository semantics) are the only active product workstreams.
+Broad language parsing remains a compatibility fallback and is not presented as
+deep semantic review.
+
 This repository contains the automated `v1.0.0-beta.1` release candidate through the Week 8 packaging and operations milestone:
 
 ```text
@@ -12,8 +19,8 @@ GitHub webhook
   → Java 17 worker
   → PR diff retrieval
   → immutable repository policy from .codelens.yml + CODELENS.md
-  → Java-native base/head changed-file symbol snapshots
-  → symbol matching and bounded impact traversal
+  → regex-based base/head changed-file snapshots (explicit fallback)
+  → bounded fallback impact traversal with coverage warnings
   → structured change summary
   → deterministic + optional LLM risk candidates
   → secret redaction + primary/fallback provider telemetry
@@ -30,10 +37,17 @@ The current milestone intentionally does not execute repository code or create f
 - Delivery-level and review-run-level idempotency.
 - PostgreSQL run state, delivery audit, and publication records.
 - PostgreSQL durable queue with leases, three attempts, exponential backoff, and run-level deduplication.
-- GitHub App installation authentication implemented in Go with short-lived installation tokens.
+- GitHub App installation authentication implemented in Java with short-lived installation tokens.
 - PR metadata and changed-file retrieval.
-- Java-native bounded symbol indexing for changed Go, Java, Kotlin, Python,
-  TypeScript, JavaScript, C#, C, C++, Rust, PHP, Ruby, and Swift files.
+- Compatibility-only bounded parsing for changed Go, Java, Kotlin, Python,
+  TypeScript, JavaScript, C#, C, C++, Rust, PHP, Ruby, and Swift files. This path
+  is labelled `diff-only/fallback` and is not semantic evidence.
+- Phase 1 foundation for exact base/head S1 workspaces, non-executing Maven/Gradle
+  build-model detection, Java whole-repository AST/type indexing, typed calls,
+  fields, inheritance, implementations, annotations, and direct test mapping.
+- Base snapshots keyed by repository, commit SHA, adapter version, and build-model
+  hash, plus head incremental reuse of unaffected files and reparsing of direct
+  dependents.
 - Stable symbols for files, functions, methods, types, classes, interfaces,
   structs, protocols, traits, modules, aliases, and enums.
 - `CALLS` relationships with line-level evidence and confidence; unresolved dynamic calls remain explicit.
@@ -317,16 +331,28 @@ The default lifecycle keeps terminal reviews and model telemetry for 90 days and
 
 ## Current limitations
 
-- The index is a PR delta, so callers in unchanged files are not visible yet; every output carries this warning.
+- The production review worker still uses the PR-delta fallback, so callers in
+  unchanged files are not visible in published reviews; every output identifies
+  `diff-only/fallback`, S0 execution, and this limitation.
 - Calls resolved within the same file or through direct imports have stronger confidence; dynamic calls remain explicit `unresolved:` targets.
 - The Java-native multi-language indexer deliberately uses bounded declaration and
   direct-call parsers rather than full compilers. It recognizes common declarations,
   nested type/method scopes, and uniquely resolvable calls, while overload dispatch,
   reflection, generated code, macros, Ruby calls without parentheses, and dynamic
   cross-file imports may remain unresolved.
-- Full compiler or Tree-sitter adapters and full-repository indexing remain post-beta improvements.
+- The Java whole-repository semantic adapter is under Phase 1 validation and is
+  not yet connected to GitHub publication. It cannot be used to claim the Phase 1
+  precision threshold until selected real repositories are independently labelled.
 - Token telemetry depends on the provider returning a compatible `usage` object; monetary cost is not calculated yet.
 - The production image and dependency-gated startup are exercised in CI; the current local beta endpoint still uses a temporary tunnel rather than a fixed production domain.
-- The beta tag remains gated on a 100-PR approved replay set, 5–10 design partners, and seven days at ≥95% success.
+- Phase 0 remains open: the required 50 real PRs, 20 positive root causes,
+  independent blind labels, and review-time crossover evidence are not present in
+  this repository.
+- Phase 1 remains open until selected real Java repositories demonstrate at least
+  90% precision for statically resolvable direct calls and unchanged-file
+  caller/test discovery.
 
-Automated beta gates pass locally. See [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) for the remaining environment and rollout gates before creating the git tag.
+Engineering regression checks pass locally; product exit gates do not. See the
+[`Phase 0/1 execution plan`](docs/phase-0-1-execution-plan.md) and
+[`Phase 0 baseline evidence`](docs/evidence/phase-0-baseline-2026-09-25.md) for
+the remaining evidence before any deep-review or beta claim.

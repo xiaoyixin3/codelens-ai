@@ -188,8 +188,11 @@ public class ReviewEngine {
         if (summary.policy() != null) out.append("\n### Repository policy\n\n- Rules: ").append(summary.policy().rules()).append("; included files: ")
                 .append(summary.policy().includedFiles()).append("; excluded files: ").append(summary.policy().excludedFiles())
                 .append("; blocking: ").append(summary.policy().blocking()).append("; language: ").append(summary.policy().language()).append('\n');
-        out.append("\n> Coverage: ").append(summary.coverage().reviewedFiles()).append('/').append(summary.coverage().totalFiles()).append(" files reviewed")
-                .append(summary.coverage().truncated() ? " (truncated)" : "").append(".\n");
+        out.append("\n### Coverage and limitations\n\n- Analysis level: **").append(summary.coverage().analysisLevel()).append("**")
+                .append("; execution level: **").append(summary.coverage().executionLevel()).append("**\n")
+                .append("- Files reviewed: ").append(summary.coverage().reviewedFiles()).append('/').append(summary.coverage().totalFiles())
+                .append(summary.coverage().truncated() ? " (truncated)" : "").append("\n");
+        summary.coverage().limitations().forEach(limitation -> out.append("- Limitation: ").append(limitation).append('\n'));
         return out.toString();
     }
 

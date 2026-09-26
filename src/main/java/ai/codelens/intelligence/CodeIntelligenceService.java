@@ -30,7 +30,7 @@ import java.util.regex.Pattern;
 @Component
 @Profile("worker")
 public class CodeIntelligenceService {
-    public static final String PARSER_VERSION = "java-native-multilang-v1";
+    public static final String PARSER_VERSION = "regex-multilang-fallback-v1";
     private static final Pattern GO_FUNCTION = Pattern.compile("^\\s*func\\s+(?:\\(\\s*\\w*\\s*\\*?([A-Za-z_]\\w*)[^)]*\\)\\s*)?([A-Za-z_]\\w*)\\s*\\(");
     private static final Pattern GO_TYPE = Pattern.compile("^\\s*type\\s+([A-Za-z_]\\w*)\\s+(?:struct|interface)\\b");
     private static final Pattern TS_DECLARATION = Pattern.compile("^\\s*(?:export\\s+)?(?:default\\s+)?(?:declare\\s+)?(?:async\\s+)?(class|interface|type|enum|function)\\s+([A-Za-z_$][\\w$]*)");

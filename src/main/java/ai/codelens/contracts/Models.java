@@ -54,7 +54,27 @@ public final class Models {
     }
 
     public record FileSummary(String path, String change) {}
-    public record Coverage(int reviewedFiles, int totalFiles, boolean truncated) {}
+    public record Coverage(
+            int reviewedFiles,
+            int totalFiles,
+            boolean truncated,
+            String analysisLevel,
+            String executionLevel,
+            List<String> limitations
+    ) {
+        public Coverage(int reviewedFiles, int totalFiles, boolean truncated) {
+            this(reviewedFiles, totalFiles, truncated, "diff-only/fallback", "S0",
+                    List.of("Only changed-file diff and bounded source context were analyzed.",
+                            "Callers and tests in unchanged files are not visible in this production path.",
+                            "Repository code, builds, and tests were not executed."));
+        }
+
+        public Coverage {
+            analysisLevel = analysisLevel == null || analysisLevel.isBlank() ? "unknown" : analysisLevel;
+            executionLevel = executionLevel == null || executionLevel.isBlank() ? "unknown" : executionLevel;
+            limitations = limitations == null ? List.of() : List.copyOf(limitations);
+        }
+    }
     public record ImpactPath(String changedName, String impactedName, int depth, double score) {}
     public record ImpactSummary(
             String level, int score, int changedSymbols, int impactedSymbols,
