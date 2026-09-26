@@ -58,18 +58,31 @@ class GsonSemanticTruthSetTest {
                 .map(edge -> new CallFact(edge.sourceLine(), edge.fromStableKey(), edge.toStableKey()))
                 .collect(Collectors.toSet());
 
+        JavacCallOracle compilerOracle = new JavacCallOracle();
+        java.util.List<String> targetPrefixes = java.util.List.of(
+                "java:method:com.google.gson.", "java:constructor:com.google.gson.");
+        JavacCallOracle.Result oracle = compilerOracle.analyze(repository, model, Set.of(SOURCE_PATH), targetPrefixes);
+        JavacCallOracle.Comparison comparison = compilerOracle.compare(oracle, index, Set.of(SOURCE_PATH), targetPrefixes);
+        Set<CallFact> oracleCalls = oracle.calls().stream()
+                .map(call -> new CallFact(call.line(), call.fromStableKey(), call.toStableKey()))
+                .collect(Collectors.toSet());
+
         Set<CallFact> correct = actual.stream().filter(expected::contains).collect(Collectors.toSet());
         double precision = actual.isEmpty() ? 0.0 : (double) correct.size() / actual.size();
         double recall = (double) correct.size() / expected.size();
         System.out.printf("GSON_TRUTH_SET commit=%s expected=%d actual=%d correct=%d precision=%.4f recall=%.4f "
+                        + "oracle=%d oracleCompilerErrors=%d toolAgreement=%.4f reviewQueue=%d "
                         + "indexedFiles=%d failedFiles=%d resolved=%d unresolved=%d%n",
                 PINNED_COMMIT, expected.size(), actual.size(), correct.size(), precision, recall,
+                oracleCalls.size(), oracle.compilerErrors(), comparison.agreementRate(), comparison.reviewQueue(10).size(),
                 index.coverage().indexedFiles(), index.coverage().failedFiles(),
                 index.coverage().resolvedRelationships(), index.coverage().unresolvedRelationships());
 
         assertTrue(precision >= 0.90, () -> "precision=" + precision + ", false positives=" + difference(actual, expected));
         assertTrue(recall >= 0.90, () -> "recall=" + recall + ", misses=" + difference(expected, actual));
         assertEquals(expected, actual, "the reviewed truth set currently expects exact agreement");
+        assertEquals(expected, oracleCalls, "independent JDK compiler attribution must agree with the reviewed truth set");
+        assertTrue(comparison.adapterOnly().isEmpty() && comparison.oracleOnly().isEmpty());
     }
 
     private static CallFact call(int line, String fromMember, String toMember) {

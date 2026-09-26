@@ -12,6 +12,13 @@ import java.util.Set;
 public final class SemanticTruthSetEvaluator {
     public static final double DEFAULT_MIN_PRECISION = 0.90;
     public static final int DEFAULT_MIN_REPOSITORIES = 2;
+    public static final double DEFAULT_MIN_CALIBRATION_SCORE = 0.80;
+    private static final Set<ContextMaterial> REQUIRED_CONTEXT = Set.of(
+            ContextMaterial.FULL_REPOSITORY,
+            ContextMaterial.BUILD_DESCRIPTORS,
+            ContextMaterial.PROJECT_DOCUMENTATION,
+            ContextMaterial.TESTS
+    );
 
     public Evaluation evaluate(Dataset dataset, SemanticModels.Index index) {
         validate(dataset);
@@ -34,8 +41,14 @@ public final class SemanticTruthSetEvaluator {
         Set<CallFact> falseNegatives = difference(expected, actual);
         double precision = actual.isEmpty() ? 0.0 : (double) truePositives.size() / actual.size();
         double recall = (double) truePositives.size() / expected.size();
+        Set<CallFact> first = Set.copyOf(dataset.blindReviews().get(0).calls());
+        Set<CallFact> second = Set.copyOf(dataset.blindReviews().get(1).calls());
+        Set<CallFact> reviewerUnion = new HashSet<>(first);
+        reviewerUnion.addAll(second);
+        double reviewerAgreement = reviewerUnion.isEmpty() ? 1.0
+                : (double) intersection(first, second).size() / reviewerUnion.size();
         return new Evaluation(dataset.repository(), dataset.commitSha(), dataset.adapterVersion(), expected.size(), actual.size(),
-                truePositives.size(), precision, recall, falsePositives, falseNegatives);
+                truePositives.size(), precision, recall, reviewerAgreement, falsePositives, falseNegatives);
     }
 
     public Gate gate(List<Evaluation> evaluations) {
@@ -86,6 +99,7 @@ public final class SemanticTruthSetEvaluator {
         if (blank(dataset.license()) || blank(dataset.adapterVersion())) {
             throw new IllegalArgumentException("License and adapter version are required");
         }
+        validateContext(dataset.context());
         if (dataset.scope() == null || dataset.scope().sourcePaths().isEmpty()
                 || dataset.scope().targetPrefixes().isEmpty()) {
             throw new IllegalArgumentException("Truth-set scope must include source paths and target prefixes");
@@ -102,9 +116,19 @@ public final class SemanticTruthSetEvaluator {
             if (blank(review.reviewerId()) || review.submittedAt() == null) {
                 throw new IllegalArgumentException("Reviewer identity and submission time are required");
             }
+            if (!dataset.context().id().equals(review.contextPacketId())) {
+                throw new IllegalArgumentException("Every blind review must use the frozen context packet");
+            }
+            if (review.submittedAt().isBefore(dataset.context().frozenAt())) {
+                throw new IllegalArgumentException("Blind review cannot predate the frozen context packet");
+            }
+            if (!review.independent()) {
+                throw new IllegalArgumentException("Blind reviews must be completed independently");
+            }
             if (review.predictionVisible()) {
                 throw new IllegalArgumentException("Reviewers must not see semantic predictions before labelling");
             }
+            validateQualification(review.qualification(), review.submittedAt());
             reviewers.add(review.reviewerId());
             validateFacts(review.calls(), dataset.scope());
         }
@@ -132,6 +156,29 @@ public final class SemanticTruthSetEvaluator {
         }
         if (dataset.adjudication().conflictCount() != conflictCount) {
             throw new IllegalArgumentException("Recorded conflict count does not match blind-label disagreement");
+        }
+    }
+
+    private static void validateContext(ContextPacket context) {
+        if (context == null || blank(context.id()) || context.frozenAt() == null
+                || context.digest() == null || !context.digest().matches("[0-9a-fA-F]{64}")) {
+            throw new IllegalArgumentException("A frozen, content-addressed context packet is required");
+        }
+        if (!context.materials().containsAll(REQUIRED_CONTEXT)) {
+            throw new IllegalArgumentException("Context packet must include repository source, builds, project docs, and tests");
+        }
+    }
+
+    private static void validateQualification(ReviewerQualification qualification, Instant submittedAt) {
+        if (qualification == null || qualification.primaryLanguages().stream().noneMatch("java"::equalsIgnoreCase)
+                || qualification.yearsExperience() < 0 || qualification.repositoryFamiliarity() == null
+                || blank(qualification.calibrationSetId())
+                || qualification.calibrationCompletedAt() == null
+                || qualification.calibrationCompletedAt().isAfter(submittedAt)
+                || !Double.isFinite(qualification.calibrationScore())
+                || qualification.calibrationScore() < DEFAULT_MIN_CALIBRATION_SCORE
+                || qualification.calibrationScore() > 1) {
+            throw new IllegalArgumentException("Reviewer must be Java-qualified and pass an earlier calibration set at 80% or above");
         }
     }
 
@@ -178,7 +225,40 @@ public final class SemanticTruthSetEvaluator {
 
     public record CallFact(String sourcePath, int line, String fromStableKey, String toStableKey) {}
 
-    public record BlindReview(String reviewerId, Instant submittedAt, boolean predictionVisible, List<CallFact> calls) {
+    public enum ContextMaterial {
+        FULL_REPOSITORY, BUILD_DESCRIPTORS, PROJECT_DOCUMENTATION, TESTS, PULL_REQUEST, LINKED_ISSUE
+    }
+
+    public enum RepositoryFamiliarity { MAINTAINER, CONTRIBUTOR, CALIBRATED_EXTERNAL }
+
+    public record ContextPacket(String id, String digest, Instant frozenAt, Set<ContextMaterial> materials) {
+        public ContextPacket {
+            materials = materials == null ? Set.of() : Set.copyOf(materials);
+        }
+    }
+
+    public record ReviewerQualification(
+            Set<String> primaryLanguages,
+            int yearsExperience,
+            RepositoryFamiliarity repositoryFamiliarity,
+            String calibrationSetId,
+            double calibrationScore,
+            Instant calibrationCompletedAt
+    ) {
+        public ReviewerQualification {
+            primaryLanguages = primaryLanguages == null ? Set.of() : Set.copyOf(primaryLanguages);
+        }
+    }
+
+    public record BlindReview(
+            String reviewerId,
+            Instant submittedAt,
+            String contextPacketId,
+            boolean independent,
+            boolean predictionVisible,
+            ReviewerQualification qualification,
+            List<CallFact> calls
+    ) {
         public BlindReview {
             calls = calls == null ? List.of() : List.copyOf(calls);
         }
@@ -195,6 +275,7 @@ public final class SemanticTruthSetEvaluator {
             String commitSha,
             String license,
             String adapterVersion,
+            ContextPacket context,
             Scope scope,
             List<BlindReview> blindReviews,
             Adjudication adjudication
@@ -213,6 +294,7 @@ public final class SemanticTruthSetEvaluator {
             int correct,
             double precision,
             double recall,
+            double reviewerAgreement,
             Set<CallFact> falsePositives,
             Set<CallFact> falseNegatives
     ) {}

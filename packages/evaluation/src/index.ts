@@ -88,9 +88,40 @@ export const RootCauseLabelSchema = z.object({
 
 export type RootCauseLabel = z.infer<typeof RootCauseLabelSchema>;
 
+export const ReviewContextMaterialSchema = z.enum([
+  'full_repository',
+  'pull_request',
+  'linked_issue',
+  'build_descriptors',
+  'project_documentation',
+  'tests',
+  'subsystem_map'
+]);
+
+export const ReviewContextPacketSchema = z.object({
+  id: z.string().trim().min(1).max(160),
+  digest: z.string().regex(/^[0-9a-f]{64}$/i),
+  frozenAt: z.string().datetime({ offset: true }),
+  materials: z.array(ReviewContextMaterialSchema).min(1),
+  scopeBriefing: z.string().trim().min(1).max(4_000)
+});
+
+export const ReviewerQualificationSchema = z.object({
+  primaryLanguages: z.array(z.string().trim().min(1).max(80)).min(1),
+  yearsExperience: z.number().int().nonnegative().max(60),
+  repositoryFamiliarity: z.enum(['maintainer', 'contributor', 'calibrated_external']),
+  calibrationSetId: z.string().trim().min(1).max(160),
+  calibrationScore: z.number().min(0.8).max(1),
+  calibrationCompletedAt: z.string().datetime({ offset: true })
+});
+
 export const BlindRootCauseReviewSchema = z.object({
   reviewerId: z.string().trim().min(2).max(120),
   submittedAt: z.string().datetime({ offset: true }),
+  contextPacketId: z.string().trim().min(1).max(160),
+  independent: z.literal(true),
+  predictionVisible: z.literal(false),
+  qualification: ReviewerQualificationSchema,
   rootCauses: z.array(RootCauseLabelSchema)
 });
 
@@ -106,6 +137,7 @@ export const Phase0CaseSchema = z.object({
     permissionBasis: z.enum(['public_license', 'repository_owner_authorization']),
     collectedAt: z.string().datetime({ offset: true })
   }),
+  contextPacket: ReviewContextPacketSchema,
   blindReviews: z.array(BlindRootCauseReviewSchema).min(2),
   adjudication: z.object({
     adjudicatedBy: z.string().trim().min(2).max(120),
@@ -114,6 +146,16 @@ export const Phase0CaseSchema = z.object({
     rootCauses: z.array(RootCauseLabelSchema)
   })
 }).superRefine((value, context) => {
+  const requiredMaterials = ['full_repository', 'pull_request', 'build_descriptors', 'project_documentation', 'tests'] as const;
+  for (const material of requiredMaterials) {
+    if (!value.contextPacket.materials.includes(material)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['contextPacket', 'materials'],
+        message: `Context packet must include ${material}.`
+      });
+    }
+  }
   const reviewers = new Set(value.blindReviews.map((review) => review.reviewerId));
   if (reviewers.size < 2) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['blindReviews'], message: 'Two distinct blind reviewers are required.' });
@@ -123,6 +165,36 @@ export const Phase0CaseSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ['adjudication', 'adjudicatedBy'],
       message: 'A third reviewer must adjudicate conflicts.'
+    });
+  }
+  for (const [index, review] of value.blindReviews.entries()) {
+    if (review.contextPacketId !== value.contextPacket.id) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['blindReviews', index, 'contextPacketId'],
+        message: 'Every blind review must use the frozen context packet.'
+      });
+    }
+    if (Date.parse(review.submittedAt) < Date.parse(value.contextPacket.frozenAt)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['blindReviews', index, 'submittedAt'],
+        message: 'Blind review cannot predate the frozen context packet.'
+      });
+    }
+    if (Date.parse(review.qualification.calibrationCompletedAt) > Date.parse(review.submittedAt)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['blindReviews', index, 'qualification', 'calibrationCompletedAt'],
+        message: 'Reviewer calibration must be completed before blind review.'
+      });
+    }
+  }
+  if (value.blindReviews.some((review) => Date.parse(value.adjudication.adjudicatedAt) <= Date.parse(review.submittedAt))) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['adjudication', 'adjudicatedAt'],
+      message: 'Adjudication must occur after all blind reviews.'
     });
   }
   const rootCauseIds = value.adjudication.rootCauses.map((rootCause) => rootCause.rootCauseId);

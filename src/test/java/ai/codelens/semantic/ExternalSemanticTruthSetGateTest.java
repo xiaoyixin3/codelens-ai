@@ -39,9 +39,9 @@ class ExternalSemanticTruthSetGateTest {
             SemanticTruthSetEvaluator.Evaluation evaluation = evaluator.evaluate(dataset, index);
             evaluations.add(evaluation);
             System.out.printf("SEMANTIC_TRUTH_SET repository=%s commit=%s expected=%d actual=%d correct=%d "
-                            + "precision=%.4f recall=%.4f indexedFiles=%d failedFiles=%d unresolved=%d%n",
+                            + "precision=%.4f recall=%.4f reviewerAgreement=%.4f indexedFiles=%d failedFiles=%d unresolved=%d%n",
                     evaluation.repository(), evaluation.commitSha(), evaluation.expected(), evaluation.actual(), evaluation.correct(),
-                    evaluation.precision(), evaluation.recall(), index.coverage().indexedFiles(),
+                    evaluation.precision(), evaluation.recall(), evaluation.reviewerAgreement(), index.coverage().indexedFiles(),
                     index.coverage().failedFiles(), index.coverage().unresolvedRelationships());
         }
 

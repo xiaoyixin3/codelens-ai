@@ -93,6 +93,12 @@ runner are ready to receive that evidence. The semantic path is not yet connecte
 to GitHub publication because the production Worker does not yet have a safe,
 authenticated archive source for the S1 materializer.
 
+Evidence-cost refinement: daily development now uses an independent JDK compiler
+oracle and deterministic disagreement queue. Human reviewers receive complete,
+content-addressed context and inspect disagreements plus an agreement sample;
+only qualified, prediction-blind gold labels can affect the formal exit gate.
+The project owner is not expected to perform specialist Java labelling.
+
 ## Merge sequence
 
 1. Baseline/ADR/evidence report and regression baseline.

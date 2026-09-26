@@ -20,6 +20,18 @@ license or owner authorization, collection time, and:
 Predictions are not part of this schema and therefore cannot be exposed to the
 reviewer before labels are frozen.
 
+Blind review is prediction-blind, not context-free. Every Reviewer must receive
+the same frozen context packet: full repository at the recorded SHA, PR text,
+approved linked Issue/incident material, relevant project documentation, build
+descriptors, tests, and a bounded map of the changed subsystem. Reviewers may
+navigate all of that material. They may not see CodeLens predictions or the other
+Reviewer's labels before submission.
+
+The project owner is not assumed to be a qualified Reviewer. Use maintainers,
+contributors, or external reviewers who passed a separate task calibration set.
+Calibration examples belong to the development set and must not reuse held-out
+cases.
+
 ## Review-time evidence
 
 Timed sessions record the case, reviewer, experiment arm (`codelens` or
@@ -42,6 +54,20 @@ The gate validates evidence sufficiency only. Precision, recall, false-positive
 rate, time reduction, latency, and cost must then be computed by versioned replay
 and the crossover analysis. No fixture, mutation set, or machine suggestion can
 satisfy the real-case gate.
+
+## Cost-controlled feedback loop
+
+- Historical review comments, later fix commits, incidents, compiler output, and
+  deterministic analyzers may generate candidate “silver” labels.
+- Machine assistance may prioritize cases and assemble context, but its proposed
+  answer remains hidden during gold labelling.
+- Routine development uses silver labels plus random human audits. Qualified
+  people focus on tool disagreements, low-confidence cases, and a random sample
+  of agreements rather than discovering every candidate from scratch.
+- Silver data can guide implementation but cannot satisfy the 50-PR/20-root-cause
+  product gate.
+- Once gold answers are exposed for debugging, that set becomes development data
+  and a new sealed holdout is required for the next product claim.
 
 Run the fail-closed evidence check with:
 

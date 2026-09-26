@@ -26,9 +26,34 @@ function phase0Case(id: string, positive: boolean) {
       permissionBasis: 'public_license' as const,
       collectedAt: '2026-09-25T10:00:00+08:00'
     },
+    contextPacket: {
+      id: `context-${id}`,
+      digest: 'c'.repeat(64),
+      frozenAt: '2026-09-25T10:30:00+08:00',
+      materials: ['full_repository', 'pull_request', 'build_descriptors', 'project_documentation', 'tests', 'subsystem_map'] as const,
+      scopeBriefing: 'Review the changed service behavior with its callers and tests.'
+    },
     blindReviews: [
-      { reviewerId: 'reviewer-a', submittedAt: '2026-09-25T11:00:00+08:00', rootCauses: labels },
-      { reviewerId: 'reviewer-b', submittedAt: '2026-09-25T12:00:00+08:00', rootCauses: labels }
+      {
+        reviewerId: 'reviewer-a', submittedAt: '2026-09-25T11:00:00+08:00', contextPacketId: `context-${id}`,
+        independent: true as const, predictionVisible: false as const,
+        qualification: {
+          primaryLanguages: ['Java'], yearsExperience: 3, repositoryFamiliarity: 'calibrated_external' as const,
+          calibrationSetId: 'phase0-java-review-v1', calibrationScore: 0.9,
+          calibrationCompletedAt: '2026-09-24T11:00:00+08:00'
+        },
+        rootCauses: labels
+      },
+      {
+        reviewerId: 'reviewer-b', submittedAt: '2026-09-25T12:00:00+08:00', contextPacketId: `context-${id}`,
+        independent: true as const, predictionVisible: false as const,
+        qualification: {
+          primaryLanguages: ['Java'], yearsExperience: 4, repositoryFamiliarity: 'contributor' as const,
+          calibrationSetId: 'phase0-java-review-v1', calibrationScore: 0.95,
+          calibrationCompletedAt: '2026-09-24T12:00:00+08:00'
+        },
+        rootCauses: labels
+      }
     ],
     adjudication: {
       adjudicatedBy: 'reviewer-c',
@@ -90,5 +115,18 @@ describe('Phase 0 evidence contract', () => {
     expect(parsed.success).toBe(false);
     if (!parsed.success) expect(parsed.error.issues[0]?.message).toContain('third reviewer');
   });
-});
 
+  it('rejects context-free, prediction-exposed, or uncalibrated labels', () => {
+    const missingContext: any = phase0Case('case-1', true);
+    missingContext.contextPacket.materials = ['pull_request'];
+    expect(Phase0CaseSchema.safeParse(missingContext).success).toBe(false);
+
+    const exposed: any = phase0Case('case-2', true);
+    exposed.blindReviews[0].predictionVisible = true;
+    expect(Phase0CaseSchema.safeParse(exposed).success).toBe(false);
+
+    const uncalibrated: any = phase0Case('case-3', true);
+    uncalibrated.blindReviews[0].qualification.calibrationScore = 0.5;
+    expect(Phase0CaseSchema.safeParse(uncalibrated).success).toBe(false);
+  });
+});

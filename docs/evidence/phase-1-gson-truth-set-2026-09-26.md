@@ -34,6 +34,14 @@ repository remains an explicit opt-in input and is never downloaded by the test.
 - Repository-wide resolved relationships: 341,218
 - Repository-wide unresolved relationships: 444,848
 
+An independent JDK compiler-attribution oracle emitted the same 16 scoped call
+facts, producing 100% tool agreement with the JavaParser adapter and no
+disagreement queue. With a deterministic one-in-ten agreement audit, only two
+of the 16 agreed facts enter the human review queue. The compiler reported 93
+diagnostics elsewhere in the selected module because the non-executing run did
+not load generated inputs or external dependencies; those diagnostics remain
+visible and prevent treating the compiler output as gold evidence.
+
 The large unresolved count is retained as degradation evidence. The current
 non-executing S1 build model discovers module source roots but does not execute
 Maven or load dependency classpaths. The exact scoped result therefore does not
