@@ -297,6 +297,80 @@ class JavaSemanticAdapterTest {
     }
 
     @Test
+    void indexesDeclaredCustomMavenSourceRoots() throws Exception {
+        Files.writeString(repository.resolve("pom.xml"), """
+                <project><modelVersion>4.0.0</modelVersion><build>
+                  <sourceDirectory>custom/main</sourceDirectory>
+                  <testSourceDirectory>custom/test</testSourceDirectory>
+                </build></project>
+                """);
+        write("custom/main/custom/Library.java", """
+                package custom;
+                public final class Library { public String value() { return "ok"; } }
+                """);
+        write("custom/test/custom/LibraryTest.java", """
+                package custom;
+                public final class LibraryTest { public String readsValue() { return new Library().value(); } }
+                """);
+        BuildModel model = new BuildModelDetector().detect(repository);
+
+        SemanticModels.Index index = new JavaSemanticAdapter().index(repository,
+                "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", model);
+
+        assertTrue(index.symbols().stream().anyMatch(symbol -> symbol.stableKey().equals("java:type:custom.Library")));
+        assertTrue(index.incoming("java:method:custom.Library#value()", CALLS).stream()
+                .anyMatch(edge -> edge.fromStableKey().equals("java:method:custom.LibraryTest#readsValue()")
+                        && edge.typeResolved()));
+    }
+
+    @Test
+    void publishesPartialCoverageWhenADeclaredSourceRootIsUnavailable() throws Exception {
+        Files.writeString(repository.resolve("pom.xml"), """
+                <project><modelVersion>4.0.0</modelVersion><build>
+                  <testSourceDirectory>missing/test</testSourceDirectory>
+                </build></project>
+                """);
+        BuildModel model = new BuildModelDetector().detect(repository);
+
+        SemanticModels.Index index = new JavaSemanticAdapter().index(repository,
+                "ffffffffffffffffffffffffffffffffffffffff", model);
+
+        assertEquals(SemanticModels.CoverageLevel.SEMANTIC_PARTIAL, index.coverage().level());
+        assertEquals(1L, index.coverage().degradationReasons().get("custom_source_root_missing_or_symlink"));
+    }
+
+    @Test
+    void doesNotScanTheWholeRepositoryWhenKnownBuildRootsAreInvalid() throws Exception {
+        Files.writeString(repository.resolve("pom.xml"), """
+                <project><modelVersion>4.0.0</modelVersion><build>
+                  <sourceDirectory>missing/main</sourceDirectory>
+                  <testSourceDirectory>missing/test</testSourceDirectory>
+                </build></project>
+                """);
+        BuildModel model = new BuildModelDetector().detect(repository);
+
+        SemanticModels.Index index = new JavaSemanticAdapter().index(repository,
+                "abababababababababababababababababababab", model);
+
+        assertEquals(0, index.coverage().indexedFiles());
+        assertEquals(SemanticModels.CoverageLevel.FAILED, index.coverage().level());
+        assertTrue(index.symbols().isEmpty());
+    }
+
+    @Test
+    void reportsPartialCoverageForAnUnknownBuildEvenWhenConventionalSourcesExist() throws Exception {
+        Files.delete(repository.resolve("pom.xml"));
+        BuildModel model = new BuildModelDetector().detect(repository);
+
+        SemanticModels.Index index = new JavaSemanticAdapter().index(repository,
+                "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd", model);
+
+        assertTrue(index.coverage().indexedFiles() > 0);
+        assertEquals(SemanticModels.CoverageLevel.SEMANTIC_PARTIAL, index.coverage().level());
+        assertEquals(1L, index.coverage().degradationReasons().get("no_maven_or_gradle_descriptor"));
+    }
+
+    @Test
     void anonymousClassSymbolsRemainStableAcrossIndependentIndexes() throws Exception {
         write("src/main/java/example/AnonymousCaller.java", """
                 package example;

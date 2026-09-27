@@ -31,8 +31,9 @@ CODELENS_SEMANTIC_REPOSITORIES=owner/repository[,owner/repository]
 
 The global switch with an empty allowlist performs no archive download. Defaults
 remain disabled. Resource limits are separately configurable, and the pipeline
-version is `v1.0.0-beta.1-java.3`. The later dependency-aware S1 decision is
-recorded in ADR 0010; Maven/Gradle are still never executed.
+version is `v1.0.0-beta.1-java.4`. The later dependency-aware and literal
+custom-source S1 decisions are recorded in ADR 0010/0011; Maven/Gradle are still
+never executed.
 
 ## Automated evidence
 

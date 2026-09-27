@@ -5,9 +5,6 @@ import org.w3c.dom.Element;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 
-import javax.xml.XMLConstants;
-import javax.xml.parsers.DocumentBuilderFactory;
-import org.xml.sax.helpers.DefaultHandler;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -81,18 +78,7 @@ final class DeclaredDependencyResolver {
     private List<BuildModel.Dependency> parseMaven(
             Path repositoryRoot, Path descriptor, Map<String, String> degradations
     ) throws Exception {
-        DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-        factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
-        factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
-        factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
-        factory.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false);
-        factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
-        factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
-        factory.setXIncludeAware(false);
-        factory.setExpandEntityReferences(false);
-        var builder = factory.newDocumentBuilder();
-        builder.setErrorHandler(new DefaultHandler());
-        Document document = builder.parse(descriptor.toFile());
+        Document document = SafeBuildXml.parse(descriptor);
         Element project = document.getDocumentElement();
         Map<String, String> properties = mavenProperties(project);
         String projectGroup = directText(project, "groupId");

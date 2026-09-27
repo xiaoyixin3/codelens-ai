@@ -121,6 +121,13 @@ requires both the default-off global switch and an exact repository allowlist;
 see ADR 0009 and
 [`evidence/phase-1-worker-integration-2026-09-27.md`](evidence/phase-1-worker-integration-2026-09-27.md).
 
+The remaining B2 literal-layout gap is implemented as of 2026-09-27. Maven
+source-directory overrides and common explicit Gradle source-set declarations
+are read as data, constrained to existing repository-contained directories, and
+never executed. Dynamic or invalid layouts remain `semantic/partial`; see ADR
+0011 and
+[`evidence/phase-1-custom-source-layouts-2026-09-27.md`](evidence/phase-1-custom-source-layouts-2026-09-27.md).
+
 ## Merge sequence
 
 1. Baseline/ADR/evidence report and regression baseline.

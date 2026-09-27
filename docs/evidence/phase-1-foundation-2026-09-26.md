@@ -109,8 +109,9 @@ Phase 1 is **not complete** because:
    this gate.
 2. The self-repository acceptance run proves full-repository reach and finds
    callers/tests in unchanged files, but it is not an independent precision set.
-3. Maven/Gradle dependency classpaths and custom source layouts are not yet loaded;
-   external-library relationships may remain explicitly unresolved.
+3. Literal direct dependency classpaths and literal custom source layouts are now
+   supported under ADR 0010/0011. Transitive/effective build models, dynamic Gradle
+   layouts, and generated sources remain explicit partial-coverage boundaries.
 4. JDBC snapshot read/write is implemented and covered by the opt-in PostgreSQL
    integration test, but the local Docker service was unavailable, so the new
    database path is not yet backed by an executed PostgreSQL result.

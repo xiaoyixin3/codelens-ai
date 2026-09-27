@@ -26,6 +26,7 @@ public final class BuildModelDetector {
     );
     private static final long MAX_DESCRIPTOR_BYTES = 2L * 1024 * 1024;
     private final DeclaredDependencyResolver dependencies;
+    private final DeclaredSourceLayoutResolver sourceLayouts = new DeclaredSourceLayoutResolver();
 
     public BuildModelDetector() {
         this(null, 512, 128L * 1024 * 1024);
@@ -70,12 +71,15 @@ public final class BuildModelDetector {
                 .forEach(moduleRoots::add);
         if (moduleRoots.isEmpty()) moduleRoots.add(root);
 
-        List<BuildModel.Module> modules = moduleRoots.stream()
-                .sorted(Comparator.comparing(path -> relative(root, path)))
-                .map(moduleRoot -> module(root, moduleRoot, descriptors))
-                .toList();
+        List<BuildModel.Module> modules = new ArrayList<>();
+        for (Path moduleRoot : moduleRoots.stream().sorted(Comparator.comparing(path -> relative(root, path))).toList()) {
+            List<Path> owned = descriptors.stream().filter(path -> path.getParent().equals(moduleRoot)).toList();
+            DeclaredSourceLayoutResolver.Result layout = sourceLayouts.resolve(root, moduleRoot, owned);
+            degradations.putAll(layout.degradations());
+            modules.add(module(root, moduleRoot, owned, layout));
+        }
         boolean hasJavaSources = modules.stream().anyMatch(module -> !module.mainSourceRoots().isEmpty() || !module.testSourceRoots().isEmpty());
-        if (!hasJavaSources) degradations.put("java_sources", "no_conventional_java_source_roots");
+        if (!hasJavaSources) degradations.put("java_sources", "no_declared_or_conventional_java_source_roots");
         if (system == BuildModel.BuildSystem.UNKNOWN) degradations.put("build_system", "no_maven_or_gradle_descriptor");
 
         DeclaredDependencyResolver.Result resolved = dependencies.resolve(root, descriptors);
@@ -84,20 +88,18 @@ public final class BuildModelDetector {
                 hash(root, descriptors, resolved.dependencies(), resolved.classpath(), degradations), degradations);
     }
 
-    private static BuildModel.Module module(Path repositoryRoot, Path moduleRoot, List<Path> descriptors) {
+    private static BuildModel.Module module(
+            Path repositoryRoot,
+            Path moduleRoot,
+            List<Path> descriptors,
+            DeclaredSourceLayoutResolver.Result layout
+    ) {
         String root = relative(repositoryRoot, moduleRoot);
         String name = root.isBlank() ? repositoryRoot.getFileName().toString() : moduleRoot.getFileName().toString();
         List<String> ownedDescriptors = descriptors.stream()
-                .filter(path -> path.getParent().equals(moduleRoot))
                 .map(path -> relative(repositoryRoot, path))
                 .toList();
-        List<String> main = existing(repositoryRoot, moduleRoot.resolve("src/main/java"));
-        List<String> test = existing(repositoryRoot, moduleRoot.resolve("src/test/java"));
-        return new BuildModel.Module(name, root, ownedDescriptors, main, test);
-    }
-
-    private static List<String> existing(Path repositoryRoot, Path candidate) {
-        return Files.isDirectory(candidate, LinkOption.NOFOLLOW_LINKS) ? List.of(relative(repositoryRoot, candidate)) : List.of();
+        return new BuildModel.Module(name, root, ownedDescriptors, layout.mainSourceRoots(), layout.testSourceRoots());
     }
 
     private static boolean isExcluded(Path root, Path path) {

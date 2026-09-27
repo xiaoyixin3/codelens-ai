@@ -7,7 +7,7 @@ import java.util.List;
 import java.util.Map;
 
 public final class Models {
-    public static final String PIPELINE_VERSION = "v1.0.0-beta.1-java.3";
+    public static final String PIPELINE_VERSION = "v1.0.0-beta.1-java.4";
     public static final String DEFAULT_CONFIG_HASH = "default-v1";
 
     private Models() {}

@@ -73,7 +73,7 @@ import static ai.codelens.semantic.SemanticModels.RelationType.THROWS;
 import static ai.codelens.semantic.SemanticModels.RelationType.WRITES;
 
 public final class JavaSemanticAdapter implements SemanticAdapter {
-    public static final String ADAPTER_VERSION = "javaparser-3.28.2-v3";
+    public static final String ADAPTER_VERSION = "javaparser-3.28.2-v4";
     private static final Set<String> EXCLUDED_DIRECTORIES = Set.of(
             ".git", ".gradle", ".idea", "target", "build", "node_modules", "dist", "out"
     );
@@ -269,9 +269,10 @@ public final class JavaSemanticAdapter implements SemanticAdapter {
         long resolved = relationships.values().stream().filter(SemanticModels.Relationship::typeResolved).count();
         long unresolved = relationships.size() - resolved;
         if (unresolved > 0) degradations.put("unresolved_relationship", unresolved);
-        boolean dependencyDegraded = degradations.keySet().stream().anyMatch(key -> key.startsWith("dependency_"));
+        boolean buildModelDegraded = !buildModel.degradations().isEmpty()
+                || degradations.keySet().stream().anyMatch(key -> key.startsWith("dependency_jar_"));
         SemanticModels.CoverageLevel level = indexed == 0 ? FAILED
-                : failed > 0 || skipped > 0 || dependencyDegraded ? SEMANTIC_PARTIAL : SEMANTIC;
+                : failed > 0 || skipped > 0 || buildModelDegraded ? SEMANTIC_PARTIAL : SEMANTIC;
         SemanticModels.Coverage coverage = new SemanticModels.Coverage(
                 level, eligible, indexed, failed, skipped, 0, Math.toIntExact(resolved), Math.toIntExact(unresolved), degradations
         );
@@ -752,7 +753,7 @@ public final class JavaSemanticAdapter implements SemanticAdapter {
             module.mainSourceRoots().forEach(path -> addSafeRoot(root, path, roots));
             module.testSourceRoots().forEach(path -> addSafeRoot(root, path, roots));
         }
-        if (roots.isEmpty()) roots.add(root);
+        if (roots.isEmpty() && model.system() == BuildModel.BuildSystem.UNKNOWN) roots.add(root);
         return List.copyOf(roots);
     }
 

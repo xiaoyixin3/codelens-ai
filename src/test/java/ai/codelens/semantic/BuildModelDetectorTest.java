@@ -8,6 +8,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -41,7 +42,7 @@ class BuildModelDetectorTest {
 
         assertEquals(BuildModel.BuildSystem.UNKNOWN, model.system());
         assertEquals("no_maven_or_gradle_descriptor", model.degradations().get("build_system"));
-        assertEquals("no_conventional_java_source_roots", model.degradations().get("java_sources"));
+        assertEquals("no_declared_or_conventional_java_source_roots", model.degradations().get("java_sources"));
     }
 
     @Test
@@ -129,6 +130,77 @@ class BuildModelDetectorTest {
                 model.dependencies().stream().map(BuildModel.Dependency::coordinate).toList());
         assertEquals("dependency_declaration_dynamic_or_catalog",
                 model.degradations().get("build.gradle.kts#gradle"));
+    }
+
+    @Test
+    void discoversLiteralMavenCustomSourceRootsWithoutRunningMaven() throws Exception {
+        Files.writeString(root.resolve("pom.xml"), """
+                <project><modelVersion>4.0.0</modelVersion>
+                  <properties><main.dir>code/main</main.dir></properties>
+                  <build>
+                    <sourceDirectory>${project.basedir}/${main.dir}</sourceDirectory>
+                    <testSourceDirectory>code/test</testSourceDirectory>
+                  </build>
+                </project>
+                """);
+        Files.createDirectories(root.resolve("code/main"));
+        Files.createDirectories(root.resolve("code/test"));
+        Files.createDirectories(root.resolve("src/main/java"));
+        Files.createDirectories(root.resolve("src/test/java"));
+
+        BuildModel model = new BuildModelDetector().detect(root);
+
+        assertEquals(List.of("code/main"), model.modules().get(0).mainSourceRoots());
+        assertEquals(List.of("code/test"), model.modules().get(0).testSourceRoots());
+        assertFalse(model.degradations().containsKey("java_sources"));
+    }
+
+    @Test
+    void rejectsOutsideAndMissingCustomSourceRoots() throws Exception {
+        Files.writeString(root.resolve("pom.xml"), """
+                <project><modelVersion>4.0.0</modelVersion><build>
+                  <sourceDirectory>../outside</sourceDirectory>
+                  <testSourceDirectory>missing/tests</testSourceDirectory>
+                </build></project>
+                """);
+        Files.createDirectories(root.getParent().resolve("outside"));
+
+        BuildModel model = new BuildModelDetector().detect(root);
+
+        assertTrue(model.modules().get(0).mainSourceRoots().isEmpty());
+        assertTrue(model.modules().get(0).testSourceRoots().isEmpty());
+        assertTrue(model.degradations().containsValue("custom_source_root_outside_repository"));
+        assertTrue(model.degradations().containsValue("custom_source_root_missing_or_symlink"));
+    }
+
+    @Test
+    void discoversOnlyLiteralGradleCustomSourceRoots() throws Exception {
+        Files.writeString(root.resolve("build.gradle.kts"), """
+                sourceSets.main.java.srcDirs = ["code/main"]
+                sourceSets["test"].java.srcDirs("code/test")
+                """);
+        Files.createDirectories(root.resolve("code/main"));
+        Files.createDirectories(root.resolve("code/test"));
+        Files.createDirectories(root.resolve("src/main/java"));
+
+        BuildModel model = new BuildModelDetector().detect(root);
+
+        assertEquals(List.of("code/main"), model.modules().get(0).mainSourceRoots());
+        assertEquals(List.of("code/test"), model.modules().get(0).testSourceRoots());
+    }
+
+    @Test
+    void refusesDynamicGradleSourceExpressions() throws Exception {
+        Files.writeString(root.resolve("build.gradle.kts"), """
+                sourceSets.main.java.srcDir(layout.projectDirectory.dir("code/main"))
+                """);
+        Files.createDirectories(root.resolve("code/main"));
+
+        BuildModel model = new BuildModelDetector().detect(root);
+
+        assertTrue(model.modules().get(0).mainSourceRoots().isEmpty());
+        assertEquals("custom_source_layout_dynamic_or_unsupported",
+                model.degradations().get("build.gradle.kts#source-layout"));
     }
 }
 
