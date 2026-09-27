@@ -2,6 +2,7 @@ package ai.codelens.github;
 
 import ai.codelens.config.RuntimeConfig;
 import ai.codelens.contracts.Models;
+import ai.codelens.workspace.RepositoryArchiveSource;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -13,7 +14,13 @@ import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.security.KeyFactory;
 import java.security.PrivateKey;
 import java.security.Signature;
@@ -30,7 +37,7 @@ import java.util.regex.Pattern;
 
 @Component
 @Profile("worker")
-public class GitHubClient {
+public class GitHubClient implements RepositoryArchiveSource {
     public static final String SUMMARY_MARKER = "<!-- codelens-ai:summary -->";
     private static final Pattern WINDOWS_DRIVE = Pattern.compile("^[A-Za-z]:");
     private final String appId;
@@ -58,6 +65,82 @@ public class GitHubClient {
             throw new IllegalStateException("GitHub contents response for " + path + " is not a base64 file");
         }
         return new String(Base64.getDecoder().decode(payload.path("content").asText().replace("\n", "")), StandardCharsets.UTF_8);
+    }
+
+    @Override
+    public void download(long installationId, String owner, String repository, String commitSha,
+                         Path destination, long maxBytes) {
+        if (commitSha == null || !commitSha.matches("[0-9a-fA-F]{40}") || maxBytes <= 0) {
+            throw new IllegalArgumentException("Archive download requires a full commit SHA and positive byte limit");
+        }
+        Path target = destination.toAbsolutePath().normalize();
+        Path temporary = target.resolveSibling(target.getFileName() + ".part");
+        try {
+            Files.createDirectories(target.getParent());
+            Files.deleteIfExists(temporary);
+            URI current = URI.create(baseUrl + repoPath(owner, repository) + "/zipball/" + encode(commitSha));
+            for (int redirect = 0; redirect <= 3; redirect++) {
+                if (!allowedArchiveUri(current)) throw new IllegalStateException("GitHub archive redirect target is not allowed");
+                HttpRequest request = HttpRequest.newBuilder(current).timeout(Duration.ofSeconds(60))
+                        .header("Authorization", "Bearer " + installationToken(installationId))
+                        .header("Accept", "application/vnd.github+json")
+                        .header("X-GitHub-Api-Version", "2022-11-28")
+                        .GET().build();
+                HttpResponse<InputStream> response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
+                try (InputStream body = response.body()) {
+                    if (response.statusCode() >= 300 && response.statusCode() < 400) {
+                        String location = response.headers().firstValue("location")
+                                .orElseThrow(() -> new IllegalStateException("GitHub archive redirect omitted Location"));
+                        current = current.resolve(location);
+                        continue;
+                    }
+                    if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                        throw new IllegalStateException("GitHub archive download status " + response.statusCode());
+                    }
+                    long declared = response.headers().firstValueAsLong("content-length").orElse(-1L);
+                    if (declared > maxBytes) throw new IllegalStateException("GitHub archive exceeds compressed size limit");
+                    copyBounded(body, temporary, maxBytes);
+                    moveAtomic(temporary, target);
+                    return;
+                }
+            }
+            throw new IllegalStateException("GitHub archive redirect limit exceeded");
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("GitHub archive download interrupted", exception);
+        } catch (IOException exception) {
+            throw new IllegalStateException("GitHub archive download failed", exception);
+        } finally {
+            try { Files.deleteIfExists(temporary); } catch (IOException ignored) { }
+        }
+    }
+
+    static boolean allowedArchiveUri(URI uri) {
+        if (uri == null || !"https".equalsIgnoreCase(uri.getScheme()) || uri.getUserInfo() != null
+                || uri.getPort() != -1 || uri.getHost() == null) return false;
+        String host = uri.getHost().toLowerCase(java.util.Locale.ROOT);
+        return host.equals("api.github.com") || host.equals("codeload.github.com");
+    }
+
+    private static void copyBounded(InputStream input, Path destination, long maxBytes) throws IOException {
+        long copied = 0;
+        try (var output = Files.newOutputStream(destination)) {
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = input.read(buffer)) >= 0) {
+                copied += read;
+                if (copied > maxBytes) throw new IllegalStateException("GitHub archive exceeds compressed size limit");
+                output.write(buffer, 0, read);
+            }
+        }
+    }
+
+    private static void moveAtomic(Path source, Path destination) throws IOException {
+        try {
+            Files.move(source, destination, StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException exception) {
+            Files.move(source, destination);
+        }
     }
 
     public Models.PullRequest getPullRequest(long installationId, String owner, String repo, int number) {

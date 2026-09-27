@@ -4,6 +4,7 @@ import ai.codelens.config.DotEnv;
 import ai.codelens.config.RuntimeConfig;
 import ai.codelens.contracts.Models;
 import ai.codelens.semantic.JdbcSemanticSnapshotStore;
+import ai.codelens.semantic.JdbcSemanticReviewAuditStore;
 import ai.codelens.semantic.SemanticModels;
 import ai.codelens.semantic.SemanticSnapshotStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -65,6 +66,12 @@ class PostgresIntegrationTest {
                     1, 1, 0, 0, 1, 0, 0, Map.of("incremental_reused_file", 1L)));
             semantic.save(semanticKey, semanticIndex);
             assertEquals(semanticIndex, semantic.load(semanticKey).orElseThrow());
+            Models.ImpactSummary semanticImpact = new Models.ImpactSummary("low", 10, 1, 1, List.of(), "integration");
+            Models.Coverage semanticCoverage = new Models.Coverage(1, 1, false, "semantic", "S1", List.of());
+            new JdbcSemanticReviewAuditStore(jdbc, dataSource, json).save(
+                    runId, repository, semanticIndex, semanticIndex, semanticImpact, semanticCoverage);
+            assertEquals(1, jdbc.queryForObject(
+                    "SELECT count(*) FROM semantic_review_analyses WHERE review_run_id=?::uuid", Integer.class, runId));
 
             providers.delete(installation, providerId, "integration-test"); assertTrue(providers.list(installation).isEmpty());
         } finally {

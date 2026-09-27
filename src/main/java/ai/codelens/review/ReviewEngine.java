@@ -7,6 +7,7 @@ import ai.codelens.intelligence.CodeIntelligenceService;
 import ai.codelens.llm.LlmClient;
 import ai.codelens.policy.RepositoryPolicyService;
 import ai.codelens.security.Redactor;
+import ai.codelens.semantic.SemanticReviewService;
 import ai.codelens.store.JdbcStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.context.annotation.Profile;
@@ -44,14 +45,16 @@ public class ReviewEngine {
     private final GitHubClient github;
     private final RepositoryPolicyService policies;
     private final CodeIntelligenceService intelligence;
+    private final SemanticReviewService semantics;
     private final LlmClient llm;
     private final RuntimeConfig config;
     private final ObjectMapper json;
 
     public ReviewEngine(JdbcStore store, GitHubClient github, RepositoryPolicyService policies,
-                        CodeIntelligenceService intelligence, LlmClient llm, RuntimeConfig config, ObjectMapper json) {
+                        CodeIntelligenceService intelligence, SemanticReviewService semantics,
+                        LlmClient llm, RuntimeConfig config, ObjectMapper json) {
         this.store = store; this.github = github; this.policies = policies; this.intelligence = intelligence;
-        this.llm = llm; this.config = config; this.json = json;
+        this.semantics = semantics; this.llm = llm; this.config = config; this.json = json;
     }
 
     public void execute(Models.ReviewJob job) {
@@ -71,11 +74,14 @@ public class ReviewEngine {
         store.updateReviewRunConfig(run.id(), policy.hash());
 
         CodeIntelligenceService.Result analysis = intelligence.analyze(run.id(), run.repositoryId(), job, pull);
-        Models.ChangeSummary summary = summarize(pull, policy.language(), analysis.summary());
+        SemanticReviewService.Result semantic = semantics.analyze(run.repositoryId(), job, pull);
+        Models.ImpactSummary selectedImpact = semantic.applied() ? semantic.impact() : analysis.summary();
+        Models.ChangeSummary summary = summarize(pull, policy.language(), selectedImpact);
         if (llm.enabled()) {
-            try { summary = llm.generateSummary(run.id(), pull, policy, analysis.summary()); }
+            try { summary = llm.generateSummary(run.id(), pull, policy, selectedImpact); }
             catch (RuntimeException ignored) { /* deterministic summary is the safe fallback */ }
         }
+        summary = applySemanticCoverage(summary, semantic);
         List<Models.Finding> findings = new ArrayList<>(reviewRisk(pull));
         if (llm.enabled()) {
             try { findings.addAll(llm.reviewRisk(run.id(), pull, policy, analysis.summary())); }
@@ -142,6 +148,16 @@ public class ReviewEngine {
         List<Models.FileSummary> files = bounded.stream().map(file -> new Models.FileSummary(file.path(), file.status())).toList();
         return new Models.ChangeSummary(pull.title().isBlank() ? "Review the proposed code change" : pull.title(), overview, files, risk,
                 reasons, new Models.Coverage(bounded.size(), pull.files().size(), bounded.size() < pull.files().size()), null, impact, null);
+    }
+
+    static Models.ChangeSummary applySemanticCoverage(Models.ChangeSummary summary, SemanticReviewService.Result semantic) {
+        if (semantic.applied()) return summary.withCoverage(semantic.coverage());
+        if (!semantic.attempted()) return summary;
+        List<String> limitations = new ArrayList<>(summary.coverage().limitations());
+        limitations.add("Whole-repository Java semantics failed closed (" + semantic.reason()
+                + "); the published result remains diff-only fallback evidence.");
+        return summary.withCoverage(new Models.Coverage(summary.coverage().reviewedFiles(), summary.coverage().totalFiles(),
+                summary.coverage().truncated(), "diff-only/fallback", semantic.executionLevel(), limitations));
     }
 
     static List<Models.Finding> reviewRisk(Models.PullRequest pull) {

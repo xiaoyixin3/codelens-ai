@@ -26,6 +26,8 @@ Source branch: `codex/phase0-phase1-foundation`
   becomes resolvable.
 - Forward-only PostgreSQL migration `011_phase1_semantic_index.sql`, including
   provenance, coverage, degradation, reuse, symbol, relationship, and file tables.
+- Forward-only migration `012_semantic_review_audit.sql` links applied production
+  results to exact base/head semantic snapshots and their published coverage.
 - Retention and confirmed repository deletion include the new semantic snapshots.
 - The production fallback parser is versioned as `regex-multilang-fallback-v1`;
   GitHub output now states `diff-only/fallback`, S0, and concrete limitations.
@@ -109,15 +111,13 @@ Phase 1 is **not complete** because:
    callers/tests in unchanged files, but it is not an independent precision set.
 3. Maven/Gradle dependency classpaths and custom source layouts are not yet loaded;
    external-library relationships may remain explicitly unresolved.
-4. The semantic path is not yet wired into the production GitHub worker. Published
-   reviews continue to use and clearly report the diff-only fallback.
-5. JDBC snapshot read/write is implemented and covered by the opt-in PostgreSQL
+4. JDBC snapshot read/write is implemented and covered by the opt-in PostgreSQL
    integration test, but the local Docker service was unavailable, so the new
-   database path is not yet backed by an executed PostgreSQL result. An
-   enabled-by-policy rollout path also remains open.
+   database path is not yet backed by an executed PostgreSQL result.
 
 ## Decision
 
-Continue Phase 1 with real-repository truth-set creation, database-backed snapshot
-integration, dependency-aware build models, and disabled-by-default worker wiring.
-Do not begin Phase 2 and do not describe the current worker as semantic review.
+Continue Phase 1 with sealed truth-set labelling, live PostgreSQL verification,
+and dependency-aware build models. Keep production semantics disabled except for
+explicitly allowlisted repositories. Do not begin Phase 2 or describe the
+default/fallback production path as semantic review.

@@ -7,7 +7,7 @@ import java.util.List;
 import java.util.Map;
 
 public final class Models {
-    public static final String PIPELINE_VERSION = "v1.0.0-beta.1-java.1";
+    public static final String PIPELINE_VERSION = "v1.0.0-beta.1-java.2";
     public static final String DEFAULT_CONFIG_HASH = "default-v1";
 
     private Models() {}
@@ -112,6 +112,9 @@ public final class Models {
         }
         public ChangeSummary withPolicy(PolicySummary value) {
             return new ChangeSummary(intent, overview, files, riskLevel, riskReasons, coverage, findings, impact, value);
+        }
+        public ChangeSummary withCoverage(Coverage value) {
+            return new ChangeSummary(intent, overview, files, riskLevel, riskReasons, value, findings, impact, policy);
         }
     }
 

@@ -1,6 +1,7 @@
 package ai.codelens.review;
 
 import ai.codelens.contracts.Models;
+import ai.codelens.semantic.SemanticReviewService;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -32,5 +33,26 @@ class ReviewEngineTest {
         assertEquals("diff-only/fallback", summary.coverage().analysisLevel());
         assertEquals("S0", summary.coverage().executionLevel());
         assertTrue(ReviewEngine.renderMarkdown(summary).contains("Callers and tests in unchanged files are not visible"));
+    }
+
+    @Test
+    void publishesSemanticCoverageOnlyWhenTheSemanticResultWasApplied() {
+        Models.PullRequest pull = new Models.PullRequest(1, "Java change", "", "base", "head", List.of(
+                new Models.ChangedFile("src/main/java/example/Target.java", "modified", 1, 1, "", "")));
+        Models.ImpactSummary impact = new Models.ImpactSummary("low", 10, 1, 1, List.of(), "semantic evidence");
+        Models.ChangeSummary summary = ReviewEngine.summarize(pull, "en", impact);
+        Models.Coverage semanticCoverage = new Models.Coverage(10, 10, false, "semantic", "S1",
+                List.of("Repository code was not executed."));
+        SemanticReviewService.Result applied = new SemanticReviewService.Result(true, true, "", "S1",
+                impact, semanticCoverage, null, null);
+        Models.ChangeSummary semantic = ReviewEngine.applySemanticCoverage(summary, applied);
+        assertEquals("semantic", semantic.coverage().analysisLevel());
+        assertEquals("S1", semantic.coverage().executionLevel());
+
+        SemanticReviewService.Result failed = new SemanticReviewService.Result(true, false,
+                "semantic_materialization_failed", "S0", null, null, null, null);
+        Models.ChangeSummary fallback = ReviewEngine.applySemanticCoverage(summary, failed);
+        assertEquals("diff-only/fallback", fallback.coverage().analysisLevel());
+        assertTrue(fallback.coverage().limitations().stream().anyMatch(value -> value.contains("failed closed")));
     }
 }

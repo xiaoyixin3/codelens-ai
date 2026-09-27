@@ -331,17 +331,19 @@ The default lifecycle keeps terminal reviews and model telemetry for 90 days and
 
 ## Current limitations
 
-- The production review worker still uses the PR-delta fallback, so callers in
-  unchanged files are not visible in published reviews; every output identifies
-  `diff-only/fallback`, S0 execution, and this limitation.
+- The production review worker defaults to the PR-delta fallback. Java
+  whole-repository semantics require both `CODELENS_SEMANTIC_ENABLED=true` and an
+  explicit `owner/repository` allowlist entry. Successful runs identify
+  `semantic` or `semantic/partial` at S1; all disabled or failed runs remain
+  explicitly `diff-only/fallback`.
 - Calls resolved within the same file or through direct imports have stronger confidence; dynamic calls remain explicit `unresolved:` targets.
 - The Java-native multi-language indexer deliberately uses bounded declaration and
   direct-call parsers rather than full compilers. It recognizes common declarations,
   nested type/method scopes, and uniquely resolvable calls, while overload dispatch,
   reflection, generated code, macros, Ruby calls without parentheses, and dynamic
   cross-file imports may remain unresolved.
-- The Java whole-repository semantic adapter is under Phase 1 validation and is
-  not yet connected to GitHub publication. It cannot be used to claim the Phase 1
+- The Java whole-repository semantic adapter is connected only for default-off,
+  repository-allowlisted impact analysis. It cannot be used to claim the Phase 1
   precision threshold until selected real repositories are independently labelled.
 - Token telemetry depends on the provider returning a compatible `usage` object; monetary cost is not calculated yet.
 - The production image and dependency-gated startup are exercised in CI; the current local beta endpoint still uses a temporary tunnel rather than a fixed production domain.

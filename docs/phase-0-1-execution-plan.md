@@ -81,7 +81,8 @@ time study. No precision, recall, or time-saving product claim is currently vali
   unchanged files.
 
 Phase 1 exit decision: **open** until direct-call precision is at least 90% on
-selected Java repositories and unchanged-file caller/test discovery is proven.
+selected Java repositories. Unchanged-file caller/test discovery is now proven
+by the default-off production-path acceptance fixture.
 
 Foundation status on 2026-09-26: B1–B4 are implemented behind standalone
 contracts and tests. Synthetic truth-set and self-repository acceptance evidence
@@ -89,9 +90,7 @@ pass. A fixed-revision Gson source-file truth set also passes 16/16, but was
 labelled by the implementer and covers only one repository. B5 remains open
 because independently labelled, selected real Java repository evidence is still
 required. A fail-closed external truth-set contract and opt-in multi-repository
-runner are ready to receive that evidence. The semantic path is not yet connected
-to GitHub publication because the production Worker does not yet have a safe,
-authenticated archive source for the S1 materializer.
+runner are ready to receive that evidence.
 
 Evidence-cost refinement: daily development now uses an independent JDK compiler
 oracle and deterministic disagreement queue. Human reviewers receive complete,
@@ -110,9 +109,17 @@ Two fresh B5 repositories were selected on 2026-09-27 only after a source-only,
 prediction-independent selection policy and sealing tests were implemented and
 passed in the working tree. Apache Commons Lang and jsoup now have complete
 content-addressed context archives covering one compact source file each.
-Neither adapter nor compiler-oracle predictions have been generated for them. B5 remains open only
-for qualified independent labels, adjudication if needed, and the subsequent
-one-time evaluation.
+Neither adapter nor compiler-oracle predictions have been generated for them.
+B5 remains open only for qualified independent labels, adjudication if needed,
+and the subsequent one-time evaluation.
+
+Merge-sequence item 5 is implemented as of 2026-09-27. The worker streams
+authenticated archives for exact base/head SHAs into a bounded S1 workspace,
+indexes and persists Java snapshots, publishes resolved unchanged-file impact
+with explicit coverage, and fails closed to the existing fallback. Activation
+requires both the default-off global switch and an exact repository allowlist;
+see ADR 0009 and
+[`evidence/phase-1-worker-integration-2026-09-27.md`](evidence/phase-1-worker-integration-2026-09-27.md).
 
 ## Merge sequence
 
