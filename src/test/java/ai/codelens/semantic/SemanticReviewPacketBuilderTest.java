@@ -54,17 +54,30 @@ class SemanticReviewPacketBuilderTest {
         assertEquals(silver.items().get(0).adapterTargets(), silver.items().get(0).oracleTargets());
 
         SemanticReviewPacketBuilder.GoldPacket gold = builder.gold(
-                repository, "example/repository", sha, Set.of(source));
+                repository, "example/repository", sha, Set.of(source), prefixes);
         assertEquals("gold/independent-holdout", gold.evidenceTier());
         assertFalse(gold.predictionsVisible());
         assertEquals(64, gold.contextDigest().length());
+        assertEquals(3, gold.contextFileCount());
+        assertTrue(gold.contextBytes() > 0);
+        assertTrue(gold.contextExclusions().contains(".git"));
         assertEquals(1, gold.scopeFiles().size());
         String goldJson = new ObjectMapper().findAndRegisterModules().writeValueAsString(gold);
         assertFalse(goldJson.contains("adapterTargets"));
         assertFalse(goldJson.contains("oracleTargets"));
 
+        String originalDigest = gold.contextDigest();
+        write("README.md", "repository-wide context");
+        SemanticReviewPacketBuilder.GoldPacket changed = builder.gold(
+                repository, "example/repository", sha, Set.of(source), prefixes);
+        assertFalse(originalDigest.equals(changed.contextDigest()));
+        write("target/generated.txt", "ignored build output");
+        SemanticReviewPacketBuilder.GoldPacket buildOutput = builder.gold(
+                repository, "example/repository", sha, Set.of(source), prefixes);
+        assertEquals(changed.contextDigest(), buildOutput.contextDigest());
+
         assertThrows(IllegalArgumentException.class,
-                () -> builder.gold(repository, "example/repository", sha, Set.of("../outside.java")));
+                () -> builder.gold(repository, "example/repository", sha, Set.of("../outside.java"), prefixes));
     }
 
     private void write(String relative, String content) throws Exception {

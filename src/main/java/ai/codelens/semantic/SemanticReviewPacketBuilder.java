@@ -16,12 +16,18 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Stream;
 
 /** Creates content-addressed local review packets while keeping gold predictions hidden. */
 public final class SemanticReviewPacketBuilder {
     private static final int EXCERPT_RADIUS = 2;
     private static final int MAX_LINE_CHARS = 500;
     private static final long MAX_SOURCE_BYTES = 2L * 1024 * 1024;
+    private static final int MAX_CONTEXT_FILES = 25_000;
+    private static final long MAX_CONTEXT_BYTES = 512L * 1024 * 1024;
+    static final Set<String> CONTEXT_EXCLUDED_DIRECTORIES = Set.of(
+            ".git", ".gradle", ".idea", "target", "build", "node_modules", "dist", "out"
+    );
 
     public SilverPacket silver(
             Path repositoryRoot,
@@ -68,17 +74,65 @@ public final class SemanticReviewPacketBuilder {
             Path repositoryRoot,
             String repository,
             String commitSha,
-            Set<String> sourcePaths
+            Set<String> sourcePaths,
+            List<String> targetPrefixes
     ) {
         Path root = validateRoot(repositoryRoot);
         validateIdentity(repository, commitSha);
         if (sourcePaths == null || sourcePaths.isEmpty()) throw new IllegalArgumentException("Gold scope must contain source paths");
+        if (targetPrefixes == null || targetPrefixes.isEmpty() || targetPrefixes.stream().anyMatch(value -> value == null || value.isBlank())) {
+            throw new IllegalArgumentException("Gold scope must contain target prefixes");
+        }
         List<ScopeFile> files = sourcePaths.stream().sorted().map(path -> scopeFile(root, path)).toList();
-        String contextDigest = contextDigest(root, sourcePaths);
-        String packetId = sha256(repository + "\n" + commitSha + "\n" + contextDigest + "\ngold");
-        return new GoldPacket(packetId, repository, commitSha, Instant.now(), contextDigest,
-                "gold/independent-holdout", false, files,
+        ContextSnapshot context = fullContext(root);
+        List<String> prefixes = targetPrefixes.stream().distinct().sorted().toList();
+        String packetId = sha256(repository + "\n" + commitSha + "\n" + context.digest() + "\n" + files + "\n" + prefixes + "\ngold");
+        return new GoldPacket(packetId, repository, commitSha, Instant.now(), context.digest(),
+                "gold/independent-holdout", false, context.fileCount(), context.totalBytes(),
+                CONTEXT_EXCLUDED_DIRECTORIES.stream().sorted().toList(), files, prefixes,
                 "Use the full frozen repository context. Identify every in-scope direct call without viewing CodeLens or compiler-oracle predictions.");
+    }
+
+    private static ContextSnapshot fullContext(Path root) {
+        List<Path> files = contextFiles(root);
+        if (files.size() > MAX_CONTEXT_FILES) throw new IllegalArgumentException("Repository context exceeds file limit");
+        long totalBytes = 0;
+        StringBuilder material = new StringBuilder();
+        for (Path file : files) {
+            try {
+                long size = Files.size(file);
+                totalBytes = Math.addExact(totalBytes, size);
+                if (totalBytes > MAX_CONTEXT_BYTES) throw new IllegalArgumentException("Repository context exceeds byte limit");
+                material.append(relative(root, file)).append('\n')
+                        .append(sha256(Files.readAllBytes(file))).append('\n').append(size).append('\n');
+            } catch (IOException exception) {
+                throw new IllegalStateException("Unable to hash repository context", exception);
+            }
+        }
+        if (files.isEmpty()) throw new IllegalArgumentException("Repository context contains no reviewable files");
+        return new ContextSnapshot(sha256(material.toString()), files.size(), totalBytes);
+    }
+
+    static List<Path> contextFiles(Path root) {
+        try (Stream<Path> paths = Files.walk(root)) {
+            return paths.filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS))
+                    .filter(path -> !contextExcluded(root, path))
+                    .sorted(Comparator.comparing(path -> relative(root, path)))
+                    .toList();
+        } catch (IOException exception) {
+            throw new IllegalStateException("Unable to enumerate repository context", exception);
+        }
+    }
+
+    private static boolean contextExcluded(Path root, Path path) {
+        for (Path part : root.relativize(path)) {
+            if (CONTEXT_EXCLUDED_DIRECTORIES.contains(part.toString())) return true;
+        }
+        return false;
+    }
+
+    static String relative(Path root, Path path) {
+        return root.relativize(path.toAbsolutePath().normalize()).toString().replace('\\', '/');
     }
 
     private static ScopeFile scopeFile(Path root, String relative) {
@@ -173,9 +227,13 @@ public final class SemanticReviewPacketBuilder {
     }
 
     private static String sha256(String value) {
+        return sha256(value.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String sha256(byte[] value) {
         try {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
-                    .digest(value.getBytes(StandardCharsets.UTF_8)));
+                    .digest(value));
         } catch (NoSuchAlgorithmException exception) {
             throw new IllegalStateException("SHA-256 is unavailable", exception);
         }
@@ -186,6 +244,8 @@ public final class SemanticReviewPacketBuilder {
             return sourcePath.equals(fact.sourcePath()) && line == fact.line();
         }
     }
+
+    private record ContextSnapshot(String digest, int fileCount, long totalBytes) {}
 
     public record Excerpt(int startLine, int endLine, List<String> lines, String digest) {
         public Excerpt { lines = List.copyOf(lines); }
@@ -236,9 +296,17 @@ public final class SemanticReviewPacketBuilder {
             String contextDigest,
             String evidenceTier,
             boolean predictionsVisible,
+            int contextFileCount,
+            long contextBytes,
+            List<String> contextExclusions,
             List<ScopeFile> scopeFiles,
+            List<String> targetPrefixes,
             String instructions
     ) {
-        public GoldPacket { scopeFiles = List.copyOf(scopeFiles); }
+        public GoldPacket {
+            contextExclusions = List.copyOf(contextExclusions);
+            scopeFiles = List.copyOf(scopeFiles);
+            targetPrefixes = List.copyOf(targetPrefixes);
+        }
     }
 }

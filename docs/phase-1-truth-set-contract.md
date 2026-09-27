@@ -6,6 +6,8 @@ Status: ready for external labelling; no qualifying datasets committed yet
 - Opt-in runner: `ExternalSemanticTruthSetGateTest`
 - Development oracle: `JavacCallOracle`
 - Packet builder: `SemanticReviewPacketBuilder`
+- Holdout selector: `SemanticHoldoutScopeSelector`
+- Sealed export command: `npm run semantic:gold-packet -- ...`
 
 ## Purpose
 
@@ -186,3 +188,13 @@ bounded five-line excerpt, and includes both tool targets only in silver packets
 Gold packets contain content-addressed scope files and instructions but have no
 adapter/oracle target fields. Tests inspect serialized gold JSON to prevent
 prediction fields from leaking back into blind review.
+
+Gold selection uses the pre-registered `java-holdout-source-only-v1` policy. It
+filters only by conventional main-source location, source size, line count, and
+lexical call-shaped expressions, then hash-ranks paths without invoking either
+semantic implementation. Export requires a clean exact Git revision and creates
+a full safe-context archive, archive checksum, scope-selection record, packet
+manifest, empty reviewer-submission template, and reviewer instructions outside
+the repository checkout. The
+2026-09-27 Apache Commons Lang and jsoup packets are recorded in
+[`evidence/phase-1-sealed-holdouts-2026-09-27.md`](evidence/phase-1-sealed-holdouts-2026-09-27.md).

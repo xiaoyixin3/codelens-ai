@@ -106,6 +106,14 @@ the frozen scope now has 105/105 target-call agreement. Because the repository
 was used to develop these fixes, it is development evidence rather than holdout
 evidence and does not close B5.
 
+Two fresh B5 repositories were selected on 2026-09-27 only after a source-only,
+prediction-independent selection policy and sealing tests were implemented and
+passed in the working tree. Apache Commons Lang and jsoup now have complete
+content-addressed context archives covering one compact source file each.
+Neither adapter nor compiler-oracle predictions have been generated for them. B5 remains open only
+for qualified independent labels, adjudication if needed, and the subsequent
+one-time evaluation.
+
 ## Merge sequence
 
 1. Baseline/ADR/evidence report and regression baseline.

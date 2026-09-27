@@ -88,6 +88,15 @@ relationships were type-resolved and 52 remained explicit unresolved evidence.
 These adapter-version-specific counts are engineering diagnostics, not product
 precision evidence.
 
+On 2026-09-27, two fresh holdout packets were sealed without running either
+semantic implementation: Apache Commons Lang at
+`29624cdb50ecd794207d561345b2fc9ca3a9d326` and jsoup at
+`81718491972c21a911c5964b2cae06fdc201dfb3`. The pre-registered source-only
+policy selected one 95-line file and one 63-line file, respectively. Each packet
+contains the complete safe repository context archive and checksum while all
+prediction fields remain absent. See
+[`phase-1-sealed-holdouts-2026-09-27.md`](phase-1-sealed-holdouts-2026-09-27.md).
+
 ## Unmet exit evidence
 
 Phase 1 is **not complete** because:

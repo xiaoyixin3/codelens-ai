@@ -33,7 +33,7 @@ class JUnit4SemanticSilverAcceptanceTest {
         SemanticReviewPacketBuilder.SilverPacket silver = packets.silver(
                 repository, "junit-team/junit4", PINNED_COMMIT, comparison, 10);
         SemanticReviewPacketBuilder.GoldPacket gold = packets.gold(
-                repository, "junit-team/junit4", PINNED_COMMIT, scope);
+                repository, "junit-team/junit4", PINNED_COMMIT, scope, prefixes);
 
         System.out.printf("JUNIT4_SILVER commit=%s adapterCalls=%d oracleCalls=%d agreements=%d adapterOnly=%d "
                         + "oracleOnly=%d agreement=%.4f compilerErrors=%d reviewItems=%d indexedFiles=%d failedFiles=%d%n",
