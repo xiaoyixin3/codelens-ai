@@ -25,6 +25,18 @@ public final class BuildModelDetector {
             ".git", ".gradle", ".idea", "target", "build", "node_modules", "dist", "out"
     );
     private static final long MAX_DESCRIPTOR_BYTES = 2L * 1024 * 1024;
+    private final DeclaredDependencyResolver dependencies;
+
+    public BuildModelDetector() {
+        this(null, 512, 128L * 1024 * 1024);
+    }
+
+    public BuildModelDetector(Path dependencyCacheRoot, int maxDependencyJars, long maxDependencyJarBytes) {
+        if (maxDependencyJars < 1 || maxDependencyJarBytes < 1) {
+            throw new IllegalArgumentException("Dependency limits must be positive");
+        }
+        dependencies = new DeclaredDependencyResolver(dependencyCacheRoot, maxDependencyJars, maxDependencyJarBytes);
+    }
 
     public BuildModel detect(Path repositoryRoot) {
         Path root = repositoryRoot.toAbsolutePath().normalize();
@@ -66,7 +78,10 @@ public final class BuildModelDetector {
         if (!hasJavaSources) degradations.put("java_sources", "no_conventional_java_source_roots");
         if (system == BuildModel.BuildSystem.UNKNOWN) degradations.put("build_system", "no_maven_or_gradle_descriptor");
 
-        return new BuildModel(system, modules, hash(root, descriptors, degradations), degradations);
+        DeclaredDependencyResolver.Result resolved = dependencies.resolve(root, descriptors);
+        degradations.putAll(resolved.degradations());
+        return new BuildModel(system, modules, resolved.dependencies(), resolved.classpath(),
+                hash(root, descriptors, resolved.dependencies(), resolved.classpath(), degradations), degradations);
     }
 
     private static BuildModel.Module module(Path repositoryRoot, Path moduleRoot, List<Path> descriptors) {
@@ -96,7 +111,13 @@ public final class BuildModelDetector {
         return value.equals(".") ? "" : value;
     }
 
-    private static String hash(Path root, List<Path> descriptors, Map<String, String> degradations) {
+    private static String hash(
+            Path root,
+            List<Path> descriptors,
+            List<BuildModel.Dependency> dependencies,
+            List<BuildModel.ClasspathEntry> classpath,
+            Map<String, String> degradations
+    ) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             for (Path descriptor : descriptors) {
@@ -112,6 +133,18 @@ public final class BuildModelDetector {
                 digest.update((byte) 0);
             }
             if (descriptors.isEmpty()) digest.update("no-build-descriptor".getBytes(StandardCharsets.UTF_8));
+            for (BuildModel.Dependency dependency : dependencies) {
+                digest.update((dependency.coordinate() + ":" + dependency.scope()).getBytes(StandardCharsets.UTF_8));
+                digest.update((byte) 0);
+            }
+            for (BuildModel.ClasspathEntry entry : classpath) {
+                digest.update((entry.coordinate() + ":" + entry.size() + ":" + entry.sha256()).getBytes(StandardCharsets.UTF_8));
+                digest.update((byte) 0);
+            }
+            degradations.entrySet().stream().sorted(Map.Entry.comparingByKey()).forEach(entry -> {
+                digest.update((entry.getKey() + "=" + entry.getValue()).getBytes(StandardCharsets.UTF_8));
+                digest.update((byte) 0);
+            });
             return HexFormat.of().formatHex(digest.digest());
         } catch (IOException | NoSuchAlgorithmException exception) {
             throw new IllegalStateException("Unable to hash build model", exception);

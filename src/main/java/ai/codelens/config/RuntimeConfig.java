@@ -36,7 +36,10 @@ public record RuntimeConfig(
         long semanticMaxExtractedBytes,
         int semanticMaxEntries,
         int semanticMaxFiles,
-        long semanticMaxFileBytes
+        long semanticMaxFileBytes,
+        String semanticDependencyCache,
+        int semanticMaxDependencyJars,
+        long semanticMaxDependencyJarBytes
 ) {
     public RuntimeConfig {
         semanticRepositories = semanticRepositories == null ? Set.of() : Set.copyOf(semanticRepositories);
@@ -67,7 +70,10 @@ public record RuntimeConfig(
                 longValue("CODELENS_SEMANTIC_MAX_EXTRACTED_BYTES", 2L * 1024 * 1024 * 1024),
                 integer("CODELENS_SEMANTIC_MAX_ENTRIES", 200_000),
                 integer("CODELENS_SEMANTIC_MAX_FILES", 50_000),
-                longValue("CODELENS_SEMANTIC_MAX_FILE_BYTES", 2L * 1024 * 1024)
+                longValue("CODELENS_SEMANTIC_MAX_FILE_BYTES", 2L * 1024 * 1024),
+                env("CODELENS_SEMANTIC_DEPENDENCY_CACHE", ""),
+                integer("CODELENS_SEMANTIC_MAX_DEPENDENCY_JARS", 512),
+                longValue("CODELENS_SEMANTIC_MAX_DEPENDENCY_JAR_BYTES", 128L * 1024 * 1024)
         );
         config.validate();
         return config;
@@ -96,7 +102,8 @@ public record RuntimeConfig(
         if (webhookSecret.length() < 16) throw new IllegalArgumentException("GITHUB_WEBHOOK_SECRET must contain at least 16 characters");
         if (maxChangedFiles < 1 || maxPatchChars < 1 || maxInlineComments < 0 || maxIndexFileBytes < 1 || workerConcurrency < 1
                 || semanticWorkspaceRoot.isBlank() || semanticMaxArchiveBytes < 1 || semanticMaxExtractedBytes < 1
-                || semanticMaxEntries < 1 || semanticMaxFiles < 1 || semanticMaxFileBytes < 1) {
+                || semanticMaxEntries < 1 || semanticMaxFiles < 1 || semanticMaxFileBytes < 1
+                || semanticMaxDependencyJars < 1 || semanticMaxDependencyJarBytes < 1) {
             throw new IllegalArgumentException("numeric limits are invalid");
         }
         requireTogether("LLM", llmBaseUrl, llmApiKey, llmModel);

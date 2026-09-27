@@ -20,8 +20,12 @@ public class SemanticRuntimeConfiguration {
 
     @Bean
     SemanticIndexService semanticIndexService(JdbcSemanticSnapshotStore snapshots, RuntimeConfig config) {
+        BuildModelDetector detector = config.semanticDependencyCache().isBlank()
+                ? new BuildModelDetector()
+                : new BuildModelDetector(Path.of(config.semanticDependencyCache()), config.semanticMaxDependencyJars(),
+                        config.semanticMaxDependencyJarBytes());
         return new SemanticIndexService(new JavaSemanticAdapter(config.semanticMaxFiles(), config.semanticMaxFileBytes()),
-                snapshots, new BuildModelDetector());
+                snapshots, detector);
     }
 
     @Bean

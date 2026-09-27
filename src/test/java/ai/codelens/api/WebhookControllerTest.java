@@ -54,6 +54,6 @@ class WebhookControllerTest {
                 "a-strong-test-secret-value", 300, 100, 120_000, 8, 500_000,
                 "", "", "", "", "", "", 4, 250_000, 2, "infra/migrations", "", "", false,
                 false, java.util.Set.of(), ".codelens-workspaces/semantic", 512L * 1024 * 1024, 2L * 1024 * 1024 * 1024,
-                200_000, 50_000, 2L * 1024 * 1024);
+                200_000, 50_000, 2L * 1024 * 1024, "", 512, 128L * 1024 * 1024);
     }
 }

@@ -46,6 +46,17 @@ This deletes review runs and cascaded findings/publications, associated model te
 
 `LLM_MAX_CALLS_PER_RUN` and `LLM_MAX_INPUT_CHARS_PER_RUN` are hard in-process limits. Exceeding either skips further provider calls and continues through deterministic fallback. Use provider-side account budgets as the final monetary control.
 
+## S1 Java dependency cache
+
+`CODELENS_SEMANTIC_DEPENDENCY_CACHE` may point to an operator-managed,
+Maven-layout directory outside every analyzed repository. Mount it read-only.
+CodeLens reads only exact literal direct dependencies, never writes the cache,
+never downloads missing artifacts, and never invokes Maven or Gradle. Bound the
+admitted set with `CODELENS_SEMANTIC_MAX_DEPENDENCY_JARS` and
+`CODELENS_SEMANTIC_MAX_DEPENDENCY_JAR_BYTES`. Leave the path blank when no trusted
+cache is available; affected runs report `semantic/partial` rather than silently
+using the network or repository build code.
+
 ## Backup and rollback
 
 Back up PostgreSQL volumes before deployment. Database migrations are forward-only. Roll back application images only when the older image understands the current schema; otherwise restore the matching database backup.

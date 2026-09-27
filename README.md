@@ -345,6 +345,10 @@ The default lifecycle keeps terminal reviews and model telemetry for 90 days and
 - The Java whole-repository semantic adapter is connected only for default-off,
   repository-allowlisted impact analysis. It cannot be used to claim the Phase 1
   precision threshold until selected real repositories are independently labelled.
+- At S1, Maven/Gradle are never executed. Exact direct dependency declarations may
+  use an operator-provisioned external Maven-layout cache, but transitive graphs,
+  BOM/parent dependency management, profiles, Gradle catalogs/variants, generated
+  sources, and annotation-processor output remain explicit partial-coverage limits.
 - Token telemetry depends on the provider returning a compatible `usage` object; monetary cost is not calculated yet.
 - The production image and dependency-gated startup are exercised in CI; the current local beta endpoint still uses a temporary tunnel rather than a fixed production domain.
 - Phase 0 remains open: the required 50 real PRs, 20 positive root causes,

@@ -5,6 +5,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -41,6 +42,93 @@ class BuildModelDetectorTest {
         assertEquals(BuildModel.BuildSystem.UNKNOWN, model.system());
         assertEquals("no_maven_or_gradle_descriptor", model.degradations().get("build_system"));
         assertEquals("no_conventional_java_source_roots", model.degradations().get("java_sources"));
+    }
+
+    @Test
+    void resolvesLiteralMavenDependenciesOnlyFromAnExternalBoundedCache() throws Exception {
+        Files.writeString(root.resolve("pom.xml"), """
+                <project><modelVersion>4.0.0</modelVersion>
+                  <properties><helper.version>1.2.3</helper.version></properties>
+                  <dependencies>
+                    <dependency><groupId>example.libs</groupId><artifactId>helper</artifactId>
+                      <version>${helper.version}</version></dependency>
+                  </dependencies>
+                </project>
+                """);
+        Files.createDirectories(root.resolve("src/main/java"));
+        Path cache = root.getParent().resolve("trusted-cache");
+        Path jar = cache.resolve("example/libs/helper/1.2.3/helper-1.2.3.jar");
+        Files.createDirectories(jar.getParent());
+        Files.write(jar, new byte[]{1, 2, 3});
+
+        BuildModel first = new BuildModelDetector(cache, 5, 1024).detect(root);
+
+        assertEquals(List.of("example.libs:helper:1.2.3"),
+                first.dependencies().stream().map(BuildModel.Dependency::coordinate).toList());
+        assertEquals(1, first.dependencyClasspath().size());
+        assertEquals(3, first.dependencyClasspath().get(0).size());
+        assertEquals("dependency_direct_declarations_only", first.degradations().get("dependency_resolution_scope"));
+
+        Files.write(jar, new byte[]{1, 2, 3, 4});
+        BuildModel second = new BuildModelDetector(cache, 5, 1024).detect(root);
+        assertNotEquals(first.hash(), second.hash(), "cache content must participate in snapshot identity");
+    }
+
+    @Test
+    void rejectsXmlWithDoctypesWithoutReadingExternalEntities() throws Exception {
+        Path cache = root.resolve("cache");
+        Files.createDirectories(cache);
+        Files.writeString(root.resolve("pom.xml"), """
+                <!DOCTYPE project [<!ENTITY xxe SYSTEM "file:///definitely-not-readable">]>
+                <project><modelVersion>4.0.0</modelVersion><dependencies>
+                  <dependency><groupId>example</groupId><artifactId>bad</artifactId><version>&xxe;</version></dependency>
+                </dependencies></project>
+                """);
+        Files.createDirectories(root.resolve("src/main/java"));
+
+        BuildModel model = new BuildModelDetector(cache, 5, 1024).detect(root);
+
+        assertTrue(model.dependencies().isEmpty());
+        assertEquals("dependency_descriptor_unparseable", model.degradations().get("pom.xml"));
+        assertTrue(model.dependencyClasspath().isEmpty());
+    }
+
+    @Test
+    void refusesARepositoryOwnedDependencyCache() throws Exception {
+        Files.writeString(root.resolve("pom.xml"), """
+                <project><modelVersion>4.0.0</modelVersion><dependencies>
+                  <dependency><groupId>example</groupId><artifactId>helper</artifactId><version>1</version></dependency>
+                </dependencies></project>
+                """);
+        Files.createDirectories(root.resolve("src/main/java"));
+        Path cache = root.resolve("cache");
+        Path jar = cache.resolve("example/helper/1/helper-1.jar");
+        Files.createDirectories(jar.getParent());
+        Files.write(jar, new byte[]{1});
+
+        BuildModel model = new BuildModelDetector(cache, 5, 1024).detect(root);
+
+        assertTrue(model.dependencyClasspath().isEmpty());
+        assertEquals("dependency_cache_untrusted_or_unavailable", model.degradations().get("dependency_cache"));
+    }
+
+    @Test
+    void readsOnlyLiteralGradleCoordinatesAndFlagsCatalogBasedDeclarations() throws Exception {
+        Files.writeString(root.resolve("build.gradle.kts"), """
+                dependencies {
+                    implementation("example.libs:helper:2.0")
+                    // implementation("commented:dependency:9")
+                    testImplementation(libs.junit)
+                }
+                """);
+        Files.createDirectories(root.resolve("src/main/java"));
+
+        BuildModel model = new BuildModelDetector().detect(root);
+
+        assertEquals(List.of("example.libs:helper:2.0"),
+                model.dependencies().stream().map(BuildModel.Dependency::coordinate).toList());
+        assertEquals("dependency_declaration_dynamic_or_catalog",
+                model.degradations().get("build.gradle.kts#gradle"));
     }
 }
 

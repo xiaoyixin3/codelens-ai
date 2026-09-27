@@ -34,6 +34,7 @@ import com.github.javaparser.resolution.declarations.ResolvedValueDeclaration;
 import com.github.javaparser.symbolsolver.JavaSymbolSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.CombinedTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.JavaParserTypeSolver;
+import com.github.javaparser.symbolsolver.resolution.typesolvers.JarTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.ReflectionTypeSolver;
 
 import java.io.IOException;
@@ -72,7 +73,7 @@ import static ai.codelens.semantic.SemanticModels.RelationType.THROWS;
 import static ai.codelens.semantic.SemanticModels.RelationType.WRITES;
 
 public final class JavaSemanticAdapter implements SemanticAdapter {
-    public static final String ADAPTER_VERSION = "javaparser-3.28.2-v2";
+    public static final String ADAPTER_VERSION = "javaparser-3.28.2-v3";
     private static final Set<String> EXCLUDED_DIRECTORIES = Set.of(
             ".git", ".gradle", ".idea", "target", "build", "node_modules", "dist", "out"
     );
@@ -188,6 +189,20 @@ public final class JavaSemanticAdapter implements SemanticAdapter {
                 .toList();
         CombinedTypeSolver typeSolver = new CombinedTypeSolver(new ReflectionTypeSolver(false));
         sourceRoots.forEach(path -> typeSolver.add(new JavaParserTypeSolver(path)));
+        Map<String, Long> degradations = buildModelDegradations(buildModel);
+        for (BuildModel.ClasspathEntry entry : buildModel.dependencyClasspath()) {
+            try {
+                Path jar = Path.of(entry.path()).toAbsolutePath().normalize();
+                if (Files.isSymbolicLink(jar) || !Files.isRegularFile(jar, LinkOption.NOFOLLOW_LINKS)
+                        || Files.size(jar) != entry.size() || !digest(jar).equals(entry.sha256())) {
+                    degradations.merge("dependency_jar_integrity_mismatch", 1L, Long::sum);
+                    continue;
+                }
+                typeSolver.add(new JarTypeSolver(jar));
+            } catch (IOException | RuntimeException exception) {
+                degradations.merge("dependency_jar_unavailable", 1L, Long::sum);
+            }
+        }
         ParserConfiguration configuration = new ParserConfiguration()
                 .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_17)
                 .setSymbolResolver(new JavaSymbolSolver(typeSolver));
@@ -195,7 +210,6 @@ public final class JavaSemanticAdapter implements SemanticAdapter {
 
         List<SemanticModels.FileStatus> statuses = new ArrayList<>();
         List<Unit> units = new ArrayList<>();
-        Map<String, Long> degradations = new LinkedHashMap<>();
         int eligible = files.size();
         int indexed = 0;
         int failed = 0;
@@ -255,8 +269,9 @@ public final class JavaSemanticAdapter implements SemanticAdapter {
         long resolved = relationships.values().stream().filter(SemanticModels.Relationship::typeResolved).count();
         long unresolved = relationships.size() - resolved;
         if (unresolved > 0) degradations.put("unresolved_relationship", unresolved);
+        boolean dependencyDegraded = degradations.keySet().stream().anyMatch(key -> key.startsWith("dependency_"));
         SemanticModels.CoverageLevel level = indexed == 0 ? FAILED
-                : failed > 0 || skipped > 0 ? SEMANTIC_PARTIAL : SEMANTIC;
+                : failed > 0 || skipped > 0 || dependencyDegraded ? SEMANTIC_PARTIAL : SEMANTIC;
         SemanticModels.Coverage coverage = new SemanticModels.Coverage(
                 level, eligible, indexed, failed, skipped, 0, Math.toIntExact(resolved), Math.toIntExact(unresolved), degradations
         );
@@ -269,6 +284,15 @@ public final class JavaSemanticAdapter implements SemanticAdapter {
                         .thenComparingInt(SemanticModels.Relationship::sourceLine))
                 .toList();
         return new SemanticModels.Index(commitSha, version(), buildModel.hash(), statuses, symbols, sortedRelationships, coverage);
+    }
+
+    private static Map<String, Long> buildModelDegradations(BuildModel buildModel) {
+        Map<String, Long> result = new LinkedHashMap<>();
+        for (String reason : buildModel.degradations().values()) {
+            String normalized = reason.replaceFirst(":.*$", "").replaceAll("[^A-Za-z0-9_.-]", "_");
+            result.merge(normalized, 1L, Long::sum);
+        }
+        return result;
     }
 
     private static void extractSymbols(

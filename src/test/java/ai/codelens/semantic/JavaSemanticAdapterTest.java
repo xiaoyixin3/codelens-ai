@@ -7,6 +7,9 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Set;
+import java.util.jar.JarEntry;
+import java.util.jar.JarOutputStream;
+import javax.tools.ToolProvider;
 
 import static ai.codelens.semantic.SemanticModels.RelationType.CALLS;
 import static ai.codelens.semantic.SemanticModels.RelationType.CATCHES;
@@ -231,6 +234,69 @@ class JavaSemanticAdapterTest {
     }
 
     @Test
+    void resolvesExternalCallsFromAnIntegrityCheckedOperatorCache() throws Exception {
+        Files.writeString(repository.resolve("pom.xml"), """
+                <project><modelVersion>4.0.0</modelVersion><dependencies>
+                  <dependency><groupId>external</groupId><artifactId>helper</artifactId><version>1.0</version></dependency>
+                </dependencies></project>
+                """);
+        write("src/main/java/example/ExternalCaller.java", """
+                package example;
+                import external.Helper;
+                public final class ExternalCaller { public int call() { return Helper.answer(); } }
+                """);
+        Path cache = repository.getParent().resolve("operator-cache");
+        createDependencyJar(cache.resolve("external/helper/1.0/helper-1.0.jar"));
+        BuildModel model = new BuildModelDetector(cache, 10, 1024 * 1024).detect(repository);
+
+        SemanticModels.Index index = new JavaSemanticAdapter().index(repository,
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", model);
+
+        assertTrue(index.relationships().stream().anyMatch(edge -> edge.type() == CALLS
+                && edge.fromStableKey().equals("java:method:example.ExternalCaller#call()")
+                && edge.toStableKey().equals("java:method:external.Helper#answer()")
+                && edge.typeResolved()));
+        assertFalse(index.coverage().degradationReasons().containsKey("dependency_jar_unavailable"));
+    }
+
+    @Test
+    void marksDeclaredDependenciesPartialWhenNoTrustedCacheIsConfigured() throws Exception {
+        Files.writeString(repository.resolve("pom.xml"), """
+                <project><modelVersion>4.0.0</modelVersion><dependencies>
+                  <dependency><groupId>external</groupId><artifactId>helper</artifactId><version>1.0</version></dependency>
+                </dependencies></project>
+                """);
+
+        SemanticModels.Index index = new JavaSemanticAdapter().index(repository,
+                "cccccccccccccccccccccccccccccccccccccccc", new BuildModelDetector().detect(repository));
+
+        assertEquals(SemanticModels.CoverageLevel.SEMANTIC_PARTIAL, index.coverage().level());
+        assertEquals(1L, index.coverage().degradationReasons().get("dependency_cache_not_configured"));
+    }
+
+    @Test
+    void refusesACacheJarChangedAfterTheBuildModelWasHashed() throws Exception {
+        Files.writeString(repository.resolve("pom.xml"), """
+                <project><modelVersion>4.0.0</modelVersion><dependencies>
+                  <dependency><groupId>external</groupId><artifactId>helper</artifactId><version>1.0</version></dependency>
+                </dependencies></project>
+                """);
+        Path cache = repository.getParent().resolve("tamper-cache");
+        Path jar = cache.resolve("external/helper/1.0/helper-1.0.jar");
+        createDependencyJar(jar);
+        BuildModel model = new BuildModelDetector(cache, 10, 1024 * 1024).detect(repository);
+        byte[] changed = Files.readAllBytes(jar);
+        changed[changed.length - 1] ^= 1;
+        Files.write(jar, changed);
+
+        SemanticModels.Index index = new JavaSemanticAdapter().index(repository,
+                "dddddddddddddddddddddddddddddddddddddddd", model);
+
+        assertEquals(SemanticModels.CoverageLevel.SEMANTIC_PARTIAL, index.coverage().level());
+        assertEquals(1L, index.coverage().degradationReasons().get("dependency_jar_integrity_mismatch"));
+    }
+
+    @Test
     void anonymousClassSymbolsRemainStableAcrossIndependentIndexes() throws Exception {
         write("src/main/java/example/AnonymousCaller.java", """
                 package example;
@@ -256,6 +322,24 @@ class JavaSemanticAdapterTest {
         assertEquals(firstKeys, secondKeys);
         assertTrue(firstKeys.stream().anyMatch(key -> key.contains("$anonymous@")));
         assertFalse(firstKeys.stream().anyMatch(key -> key.matches(".*Anonymous-[0-9a-fA-F-]{36}.*")));
+    }
+
+    private void createDependencyJar(Path jar) throws Exception {
+        Path sources = repository.getParent().resolve("dependency-src");
+        Path classes = repository.getParent().resolve("dependency-classes");
+        Files.createDirectories(sources.resolve("external"));
+        Files.createDirectories(classes);
+        Path source = sources.resolve("external/Helper.java");
+        Files.writeString(source, "package external; public final class Helper { public static int answer() { return 42; } }");
+        int result = ToolProvider.getSystemJavaCompiler().run(null, null, null,
+                "-d", classes.toString(), source.toString());
+        assertEquals(0, result);
+        Files.createDirectories(jar.getParent());
+        try (JarOutputStream output = new JarOutputStream(Files.newOutputStream(jar))) {
+            output.putNextEntry(new JarEntry("external/Helper.class"));
+            Files.copy(classes.resolve("external/Helper.class"), output);
+            output.closeEntry();
+        }
     }
 
     @Test
