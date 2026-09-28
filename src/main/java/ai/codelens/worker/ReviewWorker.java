@@ -2,6 +2,7 @@ package ai.codelens.worker;
 
 import ai.codelens.config.RuntimeConfig;
 import ai.codelens.contracts.Models;
+import ai.codelens.migration.MigrationSchemaVerifier;
 import ai.codelens.review.ReviewEngine;
 import ai.codelens.security.Redactor;
 import ai.codelens.store.JdbcStore;
@@ -23,16 +24,21 @@ import java.util.concurrent.TimeUnit;
 public class ReviewWorker {
     private static final Logger LOG = LoggerFactory.getLogger(ReviewWorker.class);
     private final JdbcStore store; private final ReviewEngine engine;
+    private final MigrationSchemaVerifier schema;
     private final ExecutorService executor; private final Semaphore slots;
 
-    public ReviewWorker(JdbcStore store, ReviewEngine engine, RuntimeConfig config) {
-        this.store = store; this.engine = engine;
+    public ReviewWorker(JdbcStore store, ReviewEngine engine, RuntimeConfig config, MigrationSchemaVerifier schema) {
+        this.store = store; this.engine = engine; this.schema = schema;
         this.executor = Executors.newFixedThreadPool(config.workerConcurrency());
         this.slots = new Semaphore(config.workerConcurrency());
     }
 
     @PostConstruct
-    void start() { store.recoverStaleJobs(); LOG.info("CodeLens Java worker started with {} slots", slots.availablePermits()); }
+    void start() {
+        schema.requireReady();
+        store.recoverStaleJobs();
+        LOG.info("CodeLens Java worker started with {} slots", slots.availablePermits());
+    }
 
     @Scheduled(fixedDelayString = "${CODELENS_WORKER_POLL_MS:1000}")
     void poll() {

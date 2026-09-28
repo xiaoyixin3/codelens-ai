@@ -1,0 +1,84 @@
+name: Release production image
+
+on:
+  push:
+    tags:
+      - 'v1.0.0-beta.*'
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: release-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Verify and publish GHCR image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GITHUB_WEBHOOK_SECRET: release-build-only-webhook-secret-not-for-production
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Set up Java
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Re-run release gates from the tag
+        run: npm run release:check
+
+      - name: Audit production Node dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Build and verify production image
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          version="${GITHUB_REF_NAME#v}"
+          sha_tag="sha-${GITHUB_SHA}"
+          docker build --pull \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.version=${version}" \
+            --tag "${image}:${version}" \
+            --tag "${image}:${sha_tag}" .
+          test "$(docker image inspect "${image}:${version}" --format '{{.Config.User}}')" = "codelens"
+
+      - name: Publish tags and report immutable digest
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          version="${GITHUB_REF_NAME#v}"
+          sha_tag="sha-${GITHUB_SHA}"
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker push "${image}:${version}"
+          docker push "${image}:${sha_tag}"
+          digest="$(docker image inspect "${image}:${version}" --format '{{index .RepoDigests 0}}')"
+          {
+            echo '### Published production image'
+            echo
+            echo "- Version: \`${image}:${version}\`"
+            echo "- Commit tag: \`${image}:${sha_tag}\`"
+            echo "- Digest: \`${digest}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

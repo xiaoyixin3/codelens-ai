@@ -3,7 +3,8 @@
 ## Health and recovery
 
 - `/healthz` confirms the API process is alive.
-- `/readyz` verifies PostgreSQL, which stores both review state and the durable job queue.
+- `/readyz` verifies PostgreSQL connectivity and the exact migration checksum
+  manifest. The worker performs the same check before recovering or claiming jobs.
 - The GitHub webhook route is limited to `WEBHOOK_RATE_LIMIT_MAX` requests per source IP per minute (default 300).
 - The Java worker retries PostgreSQL-backed review jobs three times. Review and publication IDs remain stable across retries.
 - A push during analysis makes the old run stale and suppresses its PR comment.
@@ -60,6 +61,17 @@ using the network or repository build code.
 ## Backup and rollback
 
 Back up PostgreSQL volumes before deployment. Database migrations are forward-only. Roll back application images only when the older image understands the current schema; otherwise restore the matching database backup.
+
+Migration files are immutable after release. Both migration runners serialize on
+a PostgreSQL advisory lock and reject changed checksums, gaps, or unknown applied
+migrations. Before the first checksum-aware rollout, take a backup; legacy rows
+receive their checksum baseline once. A checksum failure is an incident—do not
+edit the database row to force startup. Restore the matching artifact or backup.
+
+Production containers use read-only root filesystems and dropped capabilities.
+The worker's only persistent writable path is the `codelens-semantic` workspace
+volume. Monitor its utilization and remove abandoned run directories only while
+the worker is stopped and after confirming they are not active workspaces.
 
 The latest isolated retention, deletion, backup, and restore exercise is recorded in
 [`docs/operations-drill-2026-09-19.md`](docs/operations-drill-2026-09-19.md).

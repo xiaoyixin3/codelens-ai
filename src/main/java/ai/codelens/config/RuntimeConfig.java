@@ -6,12 +6,14 @@ import java.util.Locale;
 import java.util.Set;
 
 public record RuntimeConfig(
+        String environment,
         String mode,
         String databaseUrl,
         String githubAppId,
         String githubPrivateKey,
         String webhookSecret,
         int webhookRateLimit,
+        boolean trustProxy,
         int maxChangedFiles,
         int maxPatchChars,
         int maxInlineComments,
@@ -47,12 +49,14 @@ public record RuntimeConfig(
 
     public static RuntimeConfig fromEnvironment() {
         RuntimeConfig config = new RuntimeConfig(
+                env("CODELENS_ENVIRONMENT", "development").trim().toLowerCase(Locale.ROOT),
                 System.getProperty("codelens.mode", env("CODELENS_MODE", "api")),
                 env("DATABASE_URL", "postgres://codelens:codelens@localhost:5432/codelens"),
                 env("GITHUB_APP_ID", ""),
                 env("GITHUB_PRIVATE_KEY", "").replace("\\n", "\n"),
                 env("GITHUB_WEBHOOK_SECRET", "development-webhook-secret"),
                 integer("WEBHOOK_RATE_LIMIT_MAX", 300),
+                Boolean.parseBoolean(env("CODELENS_TRUST_PROXY", "false")),
                 integer("MAX_CHANGED_FILES", 100),
                 integer("MAX_PATCH_CHARS", 120_000),
                 integer("MAX_INLINE_COMMENTS", 8),
@@ -98,7 +102,15 @@ public record RuntimeConfig(
         return userInfo != null && userInfo.contains(":") ? userInfo.split(":", 2)[1] : "";
     }
 
-    private void validate() {
+    public boolean production() { return environment.equals("production"); }
+
+    public void validate() {
+        if (!Set.of("development", "test", "production").contains(environment)) {
+            throw new IllegalArgumentException("CODELENS_ENVIRONMENT must be development, test, or production");
+        }
+        if (!Set.of("api", "worker", "migrate").contains(mode.trim().toLowerCase(Locale.ROOT))) {
+            throw new IllegalArgumentException("CODELENS_MODE must be api, worker, or migrate");
+        }
         if (webhookSecret.length() < 16) throw new IllegalArgumentException("GITHUB_WEBHOOK_SECRET must contain at least 16 characters");
         if (maxChangedFiles < 1 || maxPatchChars < 1 || maxInlineComments < 0 || maxIndexFileBytes < 1 || workerConcurrency < 1
                 || semanticWorkspaceRoot.isBlank() || semanticMaxArchiveBytes < 1 || semanticMaxExtractedBytes < 1
@@ -116,6 +128,34 @@ public record RuntimeConfig(
         }
         if (semanticRepositories.stream().anyMatch(value -> !value.matches("[^/\\s]+/[^/\\s]+"))) {
             throw new IllegalArgumentException("CODELENS_SEMANTIC_REPOSITORIES must contain owner/repository entries");
+        }
+        if (semanticEnabled && semanticRepositories.isEmpty()) {
+            throw new IllegalArgumentException("CODELENS_SEMANTIC_REPOSITORIES is required when semantic analysis is enabled");
+        }
+        if (production()) validateProduction();
+    }
+
+    private void validateProduction() {
+        if (databasePassword().length() < 16 || databasePassword().equals("codelens")
+                || databasePassword().contains("replace-with")) {
+            throw new IllegalArgumentException("production database credentials must use a non-default password of at least 16 characters");
+        }
+        String normalizedMode = mode.trim().toLowerCase(Locale.ROOT);
+        if (normalizedMode.equals("api") && (webhookSecret.length() < 32
+                || webhookSecret.equals("development-webhook-secret") || webhookSecret.contains("replace-with"))) {
+            throw new IllegalArgumentException("production API requires a high-entropy GITHUB_WEBHOOK_SECRET of at least 32 characters");
+        }
+        if (normalizedMode.equals("worker")) {
+            if (!githubAppId.matches("[1-9][0-9]*")) {
+                throw new IllegalArgumentException("production worker requires a numeric GITHUB_APP_ID");
+            }
+            if (!githubPrivateKey.startsWith("-----BEGIN ") || !githubPrivateKey.contains("PRIVATE KEY-----")
+                    || !githubPrivateKey.contains("-----END ")) {
+                throw new IllegalArgumentException("production worker requires a PEM GITHUB_PRIVATE_KEY");
+            }
+        }
+        if (!semanticDependencyCache.isBlank() && !java.nio.file.Path.of(semanticDependencyCache).isAbsolute()) {
+            throw new IllegalArgumentException("production semantic dependency cache path must be absolute");
         }
     }
 

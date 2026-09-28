@@ -2,6 +2,7 @@ package ai.codelens.api;
 
 import ai.codelens.config.RuntimeConfig;
 import ai.codelens.contracts.Models;
+import ai.codelens.migration.MigrationSchemaVerifier;
 import ai.codelens.security.WebhookSecurity;
 import ai.codelens.store.JdbcStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -22,7 +23,7 @@ class WebhookControllerTest {
     void verifiesAndQueuesPullRequestWebhook() {
         JdbcStore store = mock(JdbcStore.class);
         RuntimeConfig config = config();
-        WebhookController controller = new WebhookController(store, config, new ObjectMapper());
+        WebhookController controller = new WebhookController(store, config, new ObjectMapper(), readySchema(), new ClientAddressResolver(config));
         HttpServletRequest request = mock(HttpServletRequest.class); when(request.getRemoteAddr()).thenReturn("127.0.0.1");
         byte[] body = """
                 {"action":"opened","installation":{"id":42},"repository":{"id":99,"name":"demo","owner":{"login":"octo"}},
@@ -43,17 +44,39 @@ class WebhookControllerTest {
     @Test
     void rejectsInvalidSignatureBeforeDatabaseAccess() {
         JdbcStore store = mock(JdbcStore.class);
-        WebhookController controller = new WebhookController(store, config(), new ObjectMapper());
+        RuntimeConfig config = config();
+        WebhookController controller = new WebhookController(store, config, new ObjectMapper(), readySchema(), new ClientAddressResolver(config));
         HttpServletRequest request = mock(HttpServletRequest.class); when(request.getRemoteAddr()).thenReturn("127.0.0.1");
         var response = controller.webhook("{}".getBytes(StandardCharsets.UTF_8), "sha256=bad", "delivery-1", "pull_request", request);
         assertEquals(HttpStatus.UNAUTHORIZED, response.getStatusCode());
     }
 
+    @Test
+    void reportsNotReadyWhenTheDatabaseSchemaIsIncomplete() {
+        JdbcStore store = mock(JdbcStore.class);
+        MigrationSchemaVerifier schema = mock(MigrationSchemaVerifier.class);
+        when(schema.status()).thenReturn(new MigrationSchemaVerifier.Status(false, "migration_missing"));
+        RuntimeConfig config = config();
+        WebhookController controller = new WebhookController(store, config, new ObjectMapper(), schema, new ClientAddressResolver(config));
+
+        var response = controller.ready();
+
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, response.getStatusCode());
+        assertEquals("not_ready", response.getBody().get("status"));
+        verify(store).ping();
+    }
+
     private static RuntimeConfig config() {
-        return new RuntimeConfig("api", "postgres://codelens:codelens@localhost:5432/codelens", "123", "",
-                "a-strong-test-secret-value", 300, 100, 120_000, 8, 500_000,
+        return new RuntimeConfig("test", "api", "postgres://codelens:codelens@localhost:5432/codelens", "123", "",
+                "a-strong-test-secret-value", 300, false, 100, 120_000, 8, 500_000,
                 "", "", "", "", "", "", 4, 250_000, 2, "infra/migrations", "", "", false,
                 false, java.util.Set.of(), ".codelens-workspaces/semantic", 512L * 1024 * 1024, 2L * 1024 * 1024 * 1024,
                 200_000, 50_000, 2L * 1024 * 1024, "", 512, 128L * 1024 * 1024);
+    }
+
+    private static MigrationSchemaVerifier readySchema() {
+        MigrationSchemaVerifier schema = mock(MigrationSchemaVerifier.class);
+        when(schema.status()).thenReturn(new MigrationSchemaVerifier.Status(true, "ready"));
+        return schema;
     }
 }

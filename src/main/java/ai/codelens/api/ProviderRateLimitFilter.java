@@ -17,14 +17,16 @@ import java.util.concurrent.ConcurrentHashMap;
 @Profile("api")
 public class ProviderRateLimitFilter extends OncePerRequestFilter {
     private final int max; private final Map<String, Window> clients = new ConcurrentHashMap<>();
-    public ProviderRateLimitFilter(RuntimeConfig config) { this.max = Math.max(1, config.webhookRateLimit()); }
+    private final ClientAddressResolver addresses;
+    public ProviderRateLimitFilter(RuntimeConfig config, ClientAddressResolver addresses) {
+        this.max = Math.max(1, config.webhookRateLimit()); this.addresses = addresses;
+    }
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
         if (!request.getRequestURI().startsWith("/api/v2/providers")) { chain.doFilter(request, response); return; }
-        String forwarded = request.getHeader("X-Forwarded-For");
-        String address = forwarded == null || forwarded.isBlank() ? request.getRemoteAddr() : forwarded.split(",", 2)[0].trim();
+        String address = addresses.resolve(request);
         long minute = System.currentTimeMillis() / 60_000;
         Window window = clients.compute(address, (ignored, old) -> old == null || old.minute() != minute
                 ? new Window(minute, 1) : new Window(minute, old.count() + 1));

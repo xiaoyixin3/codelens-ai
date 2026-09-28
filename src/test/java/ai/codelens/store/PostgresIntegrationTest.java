@@ -4,6 +4,7 @@ import ai.codelens.config.DotEnv;
 import ai.codelens.config.RuntimeConfig;
 import ai.codelens.contracts.Models;
 import ai.codelens.semantic.JdbcSemanticSnapshotStore;
+import ai.codelens.migration.MigrationSchemaVerifier;
 import ai.codelens.semantic.JdbcSemanticReviewAuditStore;
 import ai.codelens.semantic.SemanticModels;
 import ai.codelens.semantic.SemanticSnapshotStore;
@@ -34,6 +35,15 @@ class PostgresIntegrationTest {
         String providerId = UUID.randomUUID().toString(); String runId = null;
         try (HikariDataSource dataSource = new HikariDataSource(pool)) {
             JdbcTemplate jdbc = new JdbcTemplate(dataSource); ObjectMapper json = new ObjectMapper();
+            assertTrue(new MigrationSchemaVerifier(jdbc, config).status().ready());
+            String checksum = jdbc.queryForObject("SELECT checksum FROM schema_migrations WHERE name='012_semantic_review_audit.sql'", String.class);
+            try {
+                jdbc.update("UPDATE schema_migrations SET checksum='tampered' WHERE name='012_semantic_review_audit.sql'");
+                assertFalse(new MigrationSchemaVerifier(jdbc, config).status().ready());
+            } finally {
+                jdbc.update("UPDATE schema_migrations SET checksum=? WHERE name='012_semantic_review_audit.sql'", checksum);
+            }
+            assertTrue(new MigrationSchemaVerifier(jdbc, config).status().ready());
             JdbcStore reviews = new JdbcStore(jdbc, dataSource, json); ProviderStore providers = new ProviderStore(jdbc, dataSource, json);
             Models.ReviewJob pending = new Models.ReviewJob("pending", installation, "integration", "fixture", 7, "base1234", "head1234");
             JdbcStore.CreateReviewInput input = new JdbcStore.CreateReviewInput(repository, 7, "base1234", "head1234",

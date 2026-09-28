@@ -10,17 +10,22 @@ spring:
       connection-timeout: 5000
   jackson:
     default-property-inclusion: non_null
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
 server:
   port: ${PORT:3000}
   shutdown: graceful
   max-http-request-header-size: 32KB
   tomcat:
     max-swallow-size: 2MB
+    threads:
+      max: ${HTTP_MAX_THREADS:100}
+      min-spare: ${HTTP_MIN_SPARE_THREADS:5}
 management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics
+        include: health
   endpoint:
     health:
       probes:

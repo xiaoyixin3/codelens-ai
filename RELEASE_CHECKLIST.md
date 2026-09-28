@@ -10,6 +10,10 @@
 - [x] `npm run smoke:pipeline` passes against PostgreSQL and Redis
 - [x] GitHub Actions CI passes on the release commit
 - [x] CodeQL reports no unresolved high-severity finding on the release commit
+- [x] Production configuration rejects placeholders and incomplete worker identity
+- [x] Migration manifest ordering/checksums and schema-aware readiness are tested
+- [x] Production Compose applies read-only/minimum-privilege runtime controls
+- [x] Release-tag workflow re-runs gates, publishes version/commit tags to GHCR, and reports a digest-pinnable image reference
 
 Automated gates last verified on 2026-09-20 with PostgreSQL 17, Redis 8.10.1, 57 passing tests, and the `codelens-ai:1.0.0-beta.1` image.
 

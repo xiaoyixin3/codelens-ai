@@ -17,27 +17,53 @@ services:
   migrate:
     build:
       context: ..
-    image: codelens-ai:${CODELENS_IMAGE_TAG:-1.0.0-beta.1}
+    image: ${CODELENS_IMAGE_REFERENCE:-codelens-ai:1.0.0-beta.1}
     env_file:
       - path: ../.env
         required: false
     environment:
-      DATABASE_URL: postgres://codelens:${POSTGRES_PASSWORD}@postgres:5432/codelens
+      CODELENS_ENVIRONMENT: production
+      DATABASE_URL: jdbc:postgresql://postgres:5432/codelens
+      CODELENS_DB_HOST: postgres
+      CODELENS_DB_NAME: codelens
+      CODELENS_DB_USER: codelens
+      CODELENS_DB_PASSWORD: ${POSTGRES_PASSWORD}
     command: ["java", "-Dcodelens.mode=migrate", "-jar", "/app/codelens-ai.jar"]
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: ["ALL"]
     depends_on:
       postgres:
         condition: service_healthy
 
   api:
-    image: codelens-ai:${CODELENS_IMAGE_TAG:-1.0.0-beta.1}
+    image: ${CODELENS_IMAGE_REFERENCE:-codelens-ai:1.0.0-beta.1}
     restart: unless-stopped
     init: true
     env_file:
       - path: ../.env
         required: false
     environment:
-      DATABASE_URL: postgres://codelens:${POSTGRES_PASSWORD}@postgres:5432/codelens
+      CODELENS_ENVIRONMENT: production
+      DATABASE_URL: jdbc:postgresql://postgres:5432/codelens
+      CODELENS_DB_HOST: postgres
+      CODELENS_DB_NAME: codelens
+      CODELENS_DB_USER: codelens
+      CODELENS_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      CODELENS_TRUST_PROXY: "true"
     command: ["java", "-Dcodelens.mode=api", "-jar", "/app/codelens-ai.jar"]
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: ["ALL"]
+    pids_limit: 256
+    mem_limit: 1g
+    cpus: 1.0
     ports:
       - "${PORT:-3000}:3000"
     healthcheck:
@@ -50,31 +76,58 @@ services:
         condition: service_completed_successfully
 
   worker:
-    image: codelens-ai:${CODELENS_IMAGE_TAG:-1.0.0-beta.1}
+    image: ${CODELENS_IMAGE_REFERENCE:-codelens-ai:1.0.0-beta.1}
     restart: unless-stopped
     init: true
     env_file:
       - path: ../.env
         required: false
     environment:
-      DATABASE_URL: postgres://codelens:${POSTGRES_PASSWORD}@postgres:5432/codelens
+      CODELENS_ENVIRONMENT: production
+      DATABASE_URL: jdbc:postgresql://postgres:5432/codelens
+      CODELENS_DB_HOST: postgres
+      CODELENS_DB_NAME: codelens
+      CODELENS_DB_USER: codelens
+      CODELENS_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      CODELENS_SEMANTIC_WORKSPACE_ROOT: /var/lib/codelens/semantic
     command: ["java", "-Dcodelens.mode=worker", "-jar", "/app/codelens-ai.jar"]
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777
+    volumes:
+      - codelens-semantic:/var/lib/codelens/semantic
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: ["ALL"]
+    pids_limit: 512
+    mem_limit: 2g
+    cpus: 2.0
     depends_on:
       migrate:
         condition: service_completed_successfully
 
   retention:
-    image: codelens-ai:${CODELENS_IMAGE_TAG:-1.0.0-beta.1}
+    image: ${CODELENS_IMAGE_REFERENCE:-codelens-ai:1.0.0-beta.1}
     profiles: ["operations"]
     env_file:
       - path: ../.env
         required: false
     environment:
-      DATABASE_URL: postgres://codelens:${POSTGRES_PASSWORD}@postgres:5432/codelens
+      CODELENS_DB_HOST: postgres
+      CODELENS_DB_NAME: codelens
+      CODELENS_DB_USER: codelens
+      CODELENS_DB_PASSWORD: ${POSTGRES_PASSWORD}
     command: ["node", "dist/retention.js"]
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: ["ALL"]
     depends_on:
       migrate:
         condition: service_completed_successfully
 
 volumes:
   codelens-postgres:
+  codelens-semantic:

@@ -16,6 +16,11 @@ Subscribe to `pull_request`, `check_run`, and `issue_comment`. Set the webhook U
 
 Copy `.env.example` to `.env`. Set `POSTGRES_PASSWORD` for production Compose, then provide the GitHub App ID, PEM private key, and webhook secret. LLM settings are optional; without them, deterministic summary and risk rules remain available.
 
+Production Compose sets `CODELENS_ENVIRONMENT=production`. Startup will fail if
+`POSTGRES_PASSWORD` or `GITHUB_WEBHOOK_SECRET` still contains the example
+placeholder, if the database password is shorter than 16 characters, or if the
+worker lacks a numeric App ID and valid PEM key. This is intentional.
+
 Never commit `.env` or a private key. In a managed environment, inject them from the platform secret store.
 
 Before starting the worker, set `GITHUB_TEST_OWNER` and `GITHUB_TEST_REPO` to the approved sandbox repository and run:
@@ -62,6 +67,18 @@ support networks where outbound QUIC is unreliable.
 
 ## 3. Start production Compose
 
+For an immutable tagged release published by the release workflow:
+
+```bash
+CODELENS_IMAGE_REFERENCE=ghcr.io/OWNER/codelens-ai@sha256:RELEASE_DIGEST \
+docker compose -f infra/compose.production.yml pull
+docker compose -f infra/compose.production.yml up -d
+```
+
+Use the digest printed in the release workflow summary; a digest cannot drift if
+a registry tag is moved. For a local image build instead, leave
+`CODELENS_IMAGE_REFERENCE` unset and run:
+
 ```bash
 docker compose -f infra/compose.production.yml up -d --build
 ```
@@ -74,6 +91,24 @@ curl -fsS https://YOUR_HOST/readyz
 ```
 
 Terminate TLS at a trusted reverse proxy or load balancer. Do not expose PostgreSQL or Redis publicly.
+The production Compose file trusts forwarding headers. The proxy must remove any
+client-supplied `X-Forwarded-For` and `X-Forwarded-Proto` values and write its own.
+
+Before the first deployment containing migration checksums, back up PostgreSQL.
+The migration job assigns a one-time checksum baseline to legacy migration rows;
+all migration SQL files are immutable afterward.
+
+To enable the optional semantic dependency cache, mount it read-only with a
+Compose override and use the container path, for example:
+
+```yaml
+services:
+  worker:
+    environment:
+      CODELENS_SEMANTIC_DEPENDENCY_CACHE: /opt/codelens/dependencies
+    volumes:
+      - /managed/maven-cache:/opt/codelens/dependencies:ro
+```
 
 ## 4. Configure repositories
 

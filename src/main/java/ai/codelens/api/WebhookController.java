@@ -2,6 +2,7 @@ package ai.codelens.api;
 
 import ai.codelens.config.RuntimeConfig;
 import ai.codelens.contracts.Models;
+import ai.codelens.migration.MigrationSchemaVerifier;
 import ai.codelens.security.Redactor;
 import ai.codelens.security.WebhookSecurity;
 import ai.codelens.store.JdbcStore;
@@ -35,10 +36,13 @@ public class WebhookController {
     private final JdbcStore store;
     private final RuntimeConfig config;
     private final ObjectMapper json;
+    private final MigrationSchemaVerifier schema;
+    private final ClientAddressResolver clients;
     private final FixedWindowLimiter limiter;
 
-    public WebhookController(JdbcStore store, RuntimeConfig config, ObjectMapper json) {
-        this.store = store; this.config = config; this.json = json;
+    public WebhookController(JdbcStore store, RuntimeConfig config, ObjectMapper json,
+                             MigrationSchemaVerifier schema, ClientAddressResolver clients) {
+        this.store = store; this.config = config; this.json = json; this.schema = schema; this.clients = clients;
         this.limiter = new FixedWindowLimiter(config.webhookRateLimit());
     }
 
@@ -47,7 +51,11 @@ public class WebhookController {
 
     @GetMapping("/readyz")
     public ResponseEntity<Map<String, String>> ready() {
-        try { store.ping(); return ResponseEntity.ok(Map.of("status", "ready")); }
+        try {
+            store.ping();
+            if (!schema.status().ready()) throw new IllegalStateException("schema not ready");
+            return ResponseEntity.ok(Map.of("status", "ready"));
+        }
         catch (RuntimeException exception) {
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(Map.of("status", "not_ready"));
         }
@@ -60,7 +68,7 @@ public class WebhookController {
             @RequestHeader(value = "X-GitHub-Delivery", required = false) String deliveryId,
             @RequestHeader(value = "X-GitHub-Event", required = false) String event,
             HttpServletRequest request) {
-        if (!limiter.allow(clientAddress(request))) return response(HttpStatus.TOO_MANY_REQUESTS, "rate_limit_exceeded", null);
+        if (!limiter.allow(clients.resolve(request))) return response(HttpStatus.TOO_MANY_REQUESTS, "rate_limit_exceeded", null);
         if (blank(signature) || blank(deliveryId) || blank(event)
                 || !WebhookSecurity.verify(body, signature, config.webhookSecret())) {
             return response(HttpStatus.UNAUTHORIZED, "invalid_webhook_signature", null);
@@ -142,10 +150,6 @@ public class WebhookController {
     private static long number(JsonNode node, String... path) { for (String part : path) node = node.path(part); return node.asLong(); }
     private static boolean blank(String value) { return value == null || value.isBlank(); }
     private static String truncate(String value, int max) { value = value == null ? "unknown error" : value; return value.substring(0, Math.min(max, value.length())); }
-    private static String clientAddress(HttpServletRequest request) {
-        String forwarded = request.getHeader("X-Forwarded-For");
-        return forwarded == null || forwarded.isBlank() ? request.getRemoteAddr() : forwarded.split(",", 2)[0].trim();
-    }
     private record Result(String status, String runId) {}
     private static final class FixedWindowLimiter {
         private final int max; private final Map<String, Window> clients = new ConcurrentHashMap<>();

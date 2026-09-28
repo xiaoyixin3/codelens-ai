@@ -127,7 +127,7 @@ npm run dev:worker
 The API listens on port `3000` by default:
 
 - `GET /healthz` — process liveness only.
-- `GET /readyz` — PostgreSQL and queue readiness.
+- `GET /readyz` — PostgreSQL connectivity and exact migration-manifest readiness.
 - `POST /webhooks/github` — GitHub webhook receiver.
 
 ## GitHub App configuration
@@ -163,7 +163,12 @@ Follow [INSTALLATION.md](INSTALLATION.md), then start the dependency-gated stack
 docker compose -f infra/compose.production.yml up -d --build
 ```
 
-The image runs the Java API, worker, and migration modes as the non-root `codelens` user. It retains compiled TypeScript operational tools during the migration window. Migration completion gates API and worker startup. Operational retention is available through the `operations` Compose profile; backup, deletion, and rollback procedures are documented in [OPERATIONS.md](OPERATIONS.md).
+The image runs the Java API, worker, and migration modes as fixed non-root UID
+10001. Production mode rejects placeholder credentials. Migration completion and
+checksum compatibility gate API readiness and worker startup. API/worker root
+filesystems are read-only and Linux capabilities are dropped. Operational
+retention is available through the `operations` Compose profile; backup,
+deletion, and rollback procedures are documented in [OPERATIONS.md](OPERATIONS.md).
 
 For a local, single-machine beta with an automatically managed temporary HTTPS
 tunnel, use `npm run beta:local`. See [INSTALLATION.md](INSTALLATION.md) for the
