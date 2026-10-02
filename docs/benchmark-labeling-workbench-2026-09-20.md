@@ -1,7 +1,8 @@
 # Historical benchmark labelling workbench — 2026-09-20
 
-Status: superseded by [`blind-v1`](blind-benchmark-protocol.md). This document
-describes the historical machine-assisted regression workflow only.
+Status: historical. Superseded first by [`blind-v1`](blind-benchmark-protocol.md)
+and now by the R1 [`reasoning-v1` workbench](review-reasoning-workbench-r1.md).
+This document describes the original machine-assisted regression workflow only.
 
 > The resulting 100-case score must not be presented as real-world precision or
 > recall: the same rules mined the queue, predictions were visible to reviewers,

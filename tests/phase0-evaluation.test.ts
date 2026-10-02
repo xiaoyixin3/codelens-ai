@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { evaluatePhase0Evidence, Phase0CaseSchema, ReviewerSessionSchema } from '@codelens/evaluation';
+import {
+  evaluatePhase0Evidence,
+  Phase0CaseSchema,
+  ReviewContextBundleSchema,
+  ReviewerSessionSchema,
+  ReviewWorkbenchDecisionSchema
+} from '@codelens/evaluation';
 
 function rootCause(id: string) {
   return {
@@ -8,7 +14,15 @@ function rootCause(id: string) {
     severity: 'high' as const,
     claim: 'The changed behavior returns the wrong result.',
     trigger: 'A caller supplies an empty account identifier.',
-    evidence: [{ path: 'src/Service.java', startLine: 10, endLine: 10, side: 'RIGHT' as const, fact: 'The guard was removed.' }]
+    impact: 'The caller receives data belonging to the wrong account.',
+    evidence: [{
+      kind: 'diff' as const, path: 'src/Service.java', revision: 'head' as const,
+      startLine: 10, endLine: 10, side: 'RIGHT' as const, fact: 'The guard was removed.'
+    }],
+    affectedSymbols: ['Service.load'],
+    acceptableFix: 'Restore the guard through the existing account validator.',
+    verification: 'Exercise the production entry point with an empty account identifier.',
+    confidence: 'certain' as const
   };
 }
 
@@ -128,5 +142,88 @@ describe('Phase 0 evidence contract', () => {
     const uncalibrated: any = phase0Case('case-3', true);
     uncalibrated.blindReviews[0].qualification.calibrationScore = 0.5;
     expect(Phase0CaseSchema.safeParse(uncalibrated).success).toBe(false);
+  });
+
+  it('requires actionable root-cause fields and allows evidence outside added diff lines', () => {
+    const item: any = phase0Case('case-4', true);
+    item.blindReviews[0].rootCauses[0].evidence = [{
+      kind: 'caller',
+      path: 'src/Caller.java',
+      revision: 'base',
+      startLine: 42,
+      endLine: 45,
+      symbol: 'Caller.invoke',
+      fact: 'The unchanged caller still passes an empty identifier.'
+    }];
+    expect(Phase0CaseSchema.safeParse(item).success).toBe(true);
+
+    delete item.blindReviews[0].rootCauses[0].verification;
+    expect(Phase0CaseSchema.safeParse(item).success).toBe(false);
+  });
+
+  it('keeps diff sides and source evidence aligned with their revisions', () => {
+    const label = rootCause('revision-alignment');
+    expect(ReviewWorkbenchDecisionSchema.safeParse({
+      status: 'frozen', mode: 'gold', reviewer: 'reviewer-a', contextPacketId: 'packet-1',
+      predictionVisible: false, rootCauses: [{
+        ...label,
+        evidence: [{ ...label.evidence[0], side: 'LEFT', revision: 'head' }]
+      }],
+      updatedAt: '2026-09-25T11:00:00+08:00', protocol: 'reasoning-v1'
+    }).success).toBe(false);
+    expect(ReviewWorkbenchDecisionSchema.safeParse({
+      status: 'frozen', mode: 'gold', reviewer: 'reviewer-a', contextPacketId: 'packet-1',
+      predictionVisible: false, rootCauses: [{
+        ...label,
+        evidence: [{ ...label.evidence[0], kind: 'base_source', side: undefined, revision: 'head' }]
+      }],
+      updatedAt: '2026-09-25T11:00:00+08:00', protocol: 'reasoning-v1'
+    }).success).toBe(false);
+  });
+
+  it('separates prediction-blind gold decisions from assisted decisions', () => {
+    const label = rootCause('root-workbench');
+    const common = {
+      status: 'frozen' as const,
+      reviewer: 'reviewer-a',
+      contextPacketId: 'packet-1',
+      rootCauses: [label],
+      updatedAt: '2026-09-25T11:00:00+08:00',
+      protocol: 'reasoning-v1' as const
+    };
+    expect(ReviewWorkbenchDecisionSchema.safeParse({
+      ...common, mode: 'gold', predictionVisible: false
+    }).success).toBe(true);
+    expect(ReviewWorkbenchDecisionSchema.safeParse({
+      ...common, mode: 'gold', predictionVisible: true
+    }).success).toBe(false);
+    expect(ReviewWorkbenchDecisionSchema.safeParse({
+      ...common, mode: 'assisted', predictionVisible: true
+    }).success).toBe(true);
+  });
+
+  it('validates frozen neutral context paths and relationships', () => {
+    const bundle = {
+      version: 1,
+      caseId: 'case-1',
+      packetId: 'packet-1',
+      digest: 'd'.repeat(64),
+      generatedAt: '2026-09-25T10:30:00+08:00',
+      baseSha: 'a'.repeat(40),
+      headSha: 'b'.repeat(40),
+      files: [
+        { path: 'src/Service.java', revision: 'head', role: 'source', language: 'Java', content: 'class Service {}' },
+        { path: 'src/ServiceTest.java', revision: 'head', role: 'test', language: 'Java', content: 'class ServiceTest {}' }
+      ],
+      symbols: [
+        { id: 'service', name: 'Service', kind: 'class', path: 'src/Service.java', revision: 'head', startLine: 1, endLine: 1 },
+        { id: 'test', name: 'ServiceTest', kind: 'class', path: 'src/ServiceTest.java', revision: 'head', startLine: 1, endLine: 1 }
+      ],
+      relationships: [{ fromSymbolId: 'test', toSymbolId: 'service', type: 'tests', evidencePath: 'src/ServiceTest.java', evidenceLine: 1 }],
+      limitations: []
+    };
+    expect(ReviewContextBundleSchema.safeParse(bundle).success).toBe(true);
+    bundle.files[0]!.path = '../secret.txt';
+    expect(ReviewContextBundleSchema.safeParse(bundle).success).toBe(false);
   });
 });

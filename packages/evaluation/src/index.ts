@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { PullRequestContextSchema, type PullRequestContext } from '@codelens/contracts';
+import { createHash } from 'node:crypto';
+import { FindingCategorySchema, PullRequestContextSchema, type PullRequestContext } from '@codelens/contracts';
 import { DeterministicRiskReviewer, DiffMap, EvidenceVerifier } from '@codelens/risk-review';
 
 export interface ExpectedFinding {
@@ -66,27 +67,184 @@ export function isApprovedHistoricalReplayCase(item: ReplayCase): boolean {
 }
 
 export const RootCauseEvidenceSchema = z.object({
+  evidenceId: z.string().trim().min(1).max(160).optional(),
+  kind: z.enum(['diff', 'base_source', 'head_source', 'symbol', 'caller', 'test', 'config', 'build', 'execution']).default('diff'),
   path: z.string().trim().min(1),
   startLine: z.number().int().positive(),
   endLine: z.number().int().positive(),
-  side: z.enum(['LEFT', 'RIGHT']),
+  revision: z.enum(['base', 'head', 'both']).default('head'),
+  side: z.enum(['LEFT', 'RIGHT']).optional(),
+  symbol: z.string().trim().min(1).max(500).optional(),
   fact: z.string().trim().min(1).max(2_000)
-}).refine((value) => value.endLine >= value.startLine, {
-  message: 'endLine must be greater than or equal to startLine'
+}).superRefine((value, context) => {
+  if (value.endLine < value.startLine) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['endLine'], message: 'endLine must be greater than or equal to startLine' });
+  }
+  if (value.kind === 'diff' && !value.side) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['side'], message: 'Diff evidence requires LEFT or RIGHT side.' });
+  }
+  if (value.kind === 'diff' && value.side === 'LEFT' && value.revision !== 'base') {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['revision'], message: 'LEFT diff evidence must reference the base revision.' });
+  }
+  if (value.kind === 'diff' && value.side === 'RIGHT' && value.revision !== 'head') {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['revision'], message: 'RIGHT diff evidence must reference the head revision.' });
+  }
+  if (value.kind === 'base_source' && value.revision !== 'base') {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['revision'], message: 'base_source evidence must reference the base revision.' });
+  }
+  if (value.kind === 'head_source' && value.revision !== 'head') {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['revision'], message: 'head_source evidence must reference the head revision.' });
+  }
 });
+
+export type RootCauseEvidence = z.infer<typeof RootCauseEvidenceSchema>;
 
 export const RootCauseLabelSchema = z.object({
   rootCauseId: z.string().trim().min(1).max(160),
-  category: z.string().trim().min(1).max(80),
+  category: FindingCategorySchema,
   severity: z.enum(['critical', 'high', 'medium', 'low']),
   claim: z.string().trim().min(1).max(2_000),
   trigger: z.string().trim().min(1).max(2_000),
+  impact: z.string().trim().min(1).max(2_000),
   evidence: z.array(RootCauseEvidenceSchema).min(1),
+  affectedSymbols: z.array(z.string().trim().min(1).max(500)).max(100).default([]),
   acceptableFix: z.string().trim().min(1).max(2_000).optional(),
+  verification: z.string().trim().min(1).max(2_000),
+  confidence: z.enum(['certain', 'likely', 'uncertain']),
+  reviewerUncertainty: z.string().trim().min(1).max(2_000).optional(),
   notes: z.string().trim().min(1).max(2_000).optional()
 });
 
 export type RootCauseLabel = z.infer<typeof RootCauseLabelSchema>;
+
+const SafeContextPathSchema = z.string().trim().min(1).max(1_000).refine((value) => {
+  const normalized = value.replaceAll('\\', '/');
+  return !normalized.startsWith('/') && !/^[A-Za-z]:\//.test(normalized) && !normalized.split('/').includes('..');
+}, { message: 'Context path must be repository-relative and traversal-free.' });
+
+export const NeutralContextFileSchema = z.object({
+  path: SafeContextPathSchema,
+  revision: z.enum(['base', 'head']),
+  role: z.enum(['source', 'test', 'build', 'documentation', 'configuration', 'other']),
+  language: z.string().trim().min(1).max(80).optional(),
+  content: z.string().max(1_000_000)
+});
+
+export const NeutralContextSymbolSchema = z.object({
+  id: z.string().trim().min(1).max(500),
+  name: z.string().trim().min(1).max(500),
+  kind: z.string().trim().min(1).max(80),
+  path: SafeContextPathSchema,
+  revision: z.enum(['base', 'head']),
+  startLine: z.number().int().positive(),
+  endLine: z.number().int().positive()
+}).refine((value) => value.endLine >= value.startLine, {
+  message: 'Symbol endLine must be greater than or equal to startLine.'
+});
+
+export const NeutralContextRelationshipSchema = z.object({
+  fromSymbolId: z.string().trim().min(1).max(500),
+  toSymbolId: z.string().trim().min(1).max(500),
+  type: z.enum(['calls', 'implements', 'extends', 'tests', 'references']),
+  evidencePath: SafeContextPathSchema,
+  evidenceLine: z.number().int().positive()
+});
+
+export const ReviewContextBundleSchema = z.object({
+  version: z.literal(1),
+  caseId: z.string().trim().min(1).max(160),
+  packetId: z.string().trim().min(1).max(160),
+  digest: z.string().regex(/^[0-9a-f]{64}$/i),
+  generatedAt: z.string().datetime({ offset: true }),
+  baseSha: z.string().trim().min(7).max(64),
+  headSha: z.string().trim().min(7).max(64),
+  files: z.array(NeutralContextFileSchema).max(2_000),
+  symbols: z.array(NeutralContextSymbolSchema).max(100_000).default([]),
+  relationships: z.array(NeutralContextRelationshipSchema).max(250_000).default([]),
+  limitations: z.array(z.string().trim().min(1).max(1_000)).max(100).default([])
+}).superRefine((value, context) => {
+  const fileKeys = new Set(value.files.map((file) => `${file.revision}:${file.path}`));
+  if (fileKeys.size !== value.files.length) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['files'], message: 'Context files must be unique by revision and path.' });
+  }
+  const symbolIds = new Set(value.symbols.map((symbol) => symbol.id));
+  if (symbolIds.size !== value.symbols.length) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['symbols'], message: 'Context symbol ids must be unique.' });
+  }
+  value.symbols.forEach((symbol, index) => {
+    if (!fileKeys.has(`${symbol.revision}:${symbol.path}`)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['symbols', index, 'path'], message: 'Symbol must reference a bundled file.' });
+    }
+  });
+  value.relationships.forEach((relationship, index) => {
+    if (!symbolIds.has(relationship.fromSymbolId) || !symbolIds.has(relationship.toSymbolId)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['relationships', index], message: 'Relationship symbols must exist in the bundle.' });
+    }
+  });
+});
+
+export type ReviewContextBundle = z.infer<typeof ReviewContextBundleSchema>;
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  return `{${Object.entries(value as Record<string, unknown>)
+    .filter(([, item]) => item !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`)
+    .join(',')}}`;
+}
+
+export function computeReviewContextBundleDigest(value: Omit<ReviewContextBundle, 'digest'>): string {
+  return createHash('sha256').update(canonicalJson(value), 'utf8').digest('hex');
+}
+
+export const ReviewWorkbenchDecisionSchema = z.object({
+  status: z.enum(['frozen', 'deferred']),
+  mode: z.enum(['gold', 'assisted']),
+  reviewer: z.string().trim().min(2).max(80),
+  contextPacketId: z.string().trim().min(1).max(160),
+  predictionVisible: z.boolean(),
+  rootCauses: z.array(RootCauseLabelSchema).max(100),
+  notes: z.string().trim().min(1).max(2_000).optional(),
+  updatedAt: z.string().datetime({ offset: true }),
+  protocol: z.literal('reasoning-v1')
+}).superRefine((value, context) => {
+  if (value.mode === 'gold' && value.predictionVisible) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['predictionVisible'], message: 'Gold decisions must remain prediction-blind.' });
+  }
+  if (value.status === 'deferred' && value.rootCauses.length > 0) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['rootCauses'], message: 'Deferred decisions cannot freeze root causes.' });
+  }
+  const ids = value.rootCauses.map((rootCause) => rootCause.rootCauseId);
+  if (new Set(ids).size !== ids.length) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['rootCauses'], message: 'rootCauseId values must be unique within a decision.' });
+  }
+});
+
+export type ReviewWorkbenchDecision = z.infer<typeof ReviewWorkbenchDecisionSchema>;
+
+export const ReviewWorkbenchStoreSchema = z.object({
+  version: z.literal(3),
+  protocol: z.literal('reasoning-v1'),
+  mode: z.enum(['gold', 'assisted']),
+  updatedAt: z.string().datetime({ offset: true }),
+  decisions: z.record(z.string(), ReviewWorkbenchDecisionSchema)
+});
+
+export type ReviewWorkbenchStore = z.infer<typeof ReviewWorkbenchStoreSchema>;
+
+export const LegacyFindingDraftSchema = z.object({
+  sourceProtocol: z.literal('blind-v1'),
+  rootCauseId: z.string().trim().min(1).max(160),
+  category: z.string().trim().min(1).max(80),
+  severity: z.enum(['critical', 'high', 'medium', 'low']),
+  claim: z.string().trim().min(1).max(2_000),
+  evidence: z.array(RootCauseEvidenceSchema).min(1),
+  incompleteFields: z.array(z.enum(['trigger', 'impact', 'verification', 'confidence'])).min(1)
+});
+
+export type LegacyFindingDraft = z.infer<typeof LegacyFindingDraftSchema>;
 
 export const ReviewContextMaterialSchema = z.enum([
   'full_repository',
