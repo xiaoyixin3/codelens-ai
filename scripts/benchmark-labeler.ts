@@ -17,6 +17,7 @@ import {
   type RootCauseLabel
 } from '@codelens/evaluation';
 import { DeterministicRiskReviewer, DiffMap, EvidenceVerifier } from '@codelens/risk-review';
+import { buildSolutionOptions, retrieveReuseCandidates, type ReuseDecision } from '@codelens/solution-planning';
 
 interface LegacyExpectedFinding {
   ruleId: string;
@@ -371,7 +372,10 @@ app.get('/api/state', async () => {
         legacyDrafts: decision ? [] : legacyDrafts(item, legacyStore),
         ...(decision ? { decision: decisionForApi(decision) } : {})
       };
-      if (mode === 'assisted') result.assistance = suggestions.get(item.id) ?? [];
+      if (mode === 'assisted') {
+        result.assistance = suggestions.get(item.id) ?? [];
+        result.reuseInvestigations = retrieveReuseCandidates(changeBrief, bundle);
+      }
       return result;
     })
   };
@@ -412,6 +416,15 @@ app.put<{ Params: { id: string } }>('/api/decisions/:id', async (request, reply)
   store.updatedAt = updatedAt;
   await atomicWrite(decisionsPath, `${JSON.stringify(store, null, 2)}\n`);
   return { saved: true, id: item.id, decision: decisionForApi(store.decisions[item.id]!) };
+});
+
+app.post('/api/reuse/options', async (request, reply) => {
+  if (mode !== 'assisted') return reply.code(403).send({ error: 'Solution options are not available in formal gold mode.' });
+  try {
+    return { options: buildSolutionOptions(request.body as ReuseDecision) };
+  } catch {
+    return reply.code(400).send({ error: 'ReuseDecision did not satisfy the evidence, candidate, and change-budget contract.' });
+  }
 });
 
 app.post('/api/export', async (request, reply) => {

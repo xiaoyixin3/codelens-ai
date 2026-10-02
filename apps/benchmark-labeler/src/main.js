@@ -17,7 +17,7 @@ const emptyDraft = () => ({
 const model = {
   state: null, activeId: '', activeFile: '', activeContextKey: '', view: 'overview', filter: 'all', query: '',
   rootCauses: [], draft: emptyDraft(), notes: '', reviewer: localStorage.getItem('codelens-reviewer') ?? '',
-  message: '', saving: false
+  message: '', saving: false, solutionOptions: {}
 };
 
 const escapeHtml = (value = '') => String(value)
@@ -129,6 +129,11 @@ function overviewPanelHtml(current) {
 function behaviorPanelHtml(current) {
   return `<div class="behavior-scroll">${current.changeBrief.behaviorCards.map((card, index) => `<article class="behavior-card" data-behavior-index="${index}"><header><span>BEHAVIOR ${String(index + 1).padStart(2, '0')}</span><h3>${escapeHtml(card.title)}</h3><p>${escapeHtml(card.summary.text)}</p></header><div class="behavior-columns"><section><h4>Before</h4>${card.before.map((statement) => statementHtml(current, statement)).join('')}</section><section><h4>After</h4>${card.after.map((statement) => statementHtml(current, statement)).join('')}</section></div><div class="scope-grid"><div><span>变更文件</span>${card.changedFiles.map((item) => `<button data-scope-path="${escapeHtml(item)}">${escapeHtml(item)}</button>`).join('')}</div><div><span>核心符号</span>${card.coreSymbols.length ? card.coreSymbols.map((item) => `<code>${escapeHtml(item)}</code>`).join('') : '<small>语义索引未提供</small>'}</div><div><span>未修改调用方</span>${card.unchangedCallers.length ? card.unchangedCallers.map((item) => `<code>${escapeHtml(item)}</code>`).join('') : '<small>未建立关系证据</small>'}</div><div><span>相关测试</span>${card.relatedTests.length ? card.relatedTests.map((item) => `<button data-scope-path="${escapeHtml(item)}">${escapeHtml(item)}</button>`).join('') : '<small>未发现关联测试证据</small>'}</div></div><section class="card-questions"><h4>Reviewer 检查清单</h4>${card.questions.map((question, questionIndex) => questionHtml(current, question, questionIndex)).join('')}</section></article>`).join('')}</div>`;
 }
+function reusePanelHtml(current) {
+  const investigations = current.reuseInvestigations ?? [];
+  if (!investigations.length) return '<div class="context-missing"><h3>复用调查仅在辅助模式可用</h3><p>正式金标不会显示候选、决策或方案，避免预测泄漏。</p></div>';
+  return `<div class="reuse-scroll"><section class="reuse-principle"><div><span>REUSE BEFORE REWRITE</span><h3>先证明为什么复用、扩展、抽取或新建</h3></div><b>PATCH GATE</b></section>${investigations.map((investigation, index) => { const options = model.solutionOptions[`${current.id}:${investigation.behaviorId}`] ?? []; return `<article class="reuse-card"><header><span>BEHAVIOR ${String(index + 1).padStart(2, '0')}</span><h3>${escapeHtml(investigation.goal)}</h3><p>已检索 ${investigation.searchScope.searchedSymbols} 个未修改符号、${investigation.searchScope.searchedRelationships} 条关系 · ${investigation.searchScope.semanticCoverageComplete ? '语义覆盖完整' : '覆盖不足'}</p></header><section class="candidate-list">${investigation.candidates.length ? investigation.candidates.map((candidate) => `<article><div class="candidate-score">${Math.round(candidate.score * 100)}</div><div><span>${escapeHtml(candidate.relationship)} · ${escapeHtml(candidate.fit)}</span><strong>${escapeHtml(candidate.symbolName)}</strong><code>${escapeHtml(candidate.path)}</code><p>${escapeHtml(candidate.rationale)}</p><div class="candidate-actions"><div class="evidence-chips">${candidate.evidenceIds.map((id) => evidenceChipHtml(current, id)).join('')}</div>${candidate.fit !== 'rejected' ? `<button data-build-solution="${escapeHtml(investigation.behaviorId)}" data-candidate-id="${escapeHtml(candidate.id)}">基于此候选生成方案</button>` : ''}</div></div></article>`).join('') : '<div class="empty-human">当前冻结范围没有可验证候选；这不等于仓库中不存在可复用实现。</div>'}</section>${options.length ? `<section class="solution-options"><div class="solution-heading"><span>SOLUTION OPTIONS</span><h4>可审计方案，不是可直接提交的补丁</h4></div>${options.map((option, optionIndex) => `<article><b>0${optionIndex + 1}</b><div><span>${escapeHtml(option.strategy)}</span><strong>${escapeHtml(option.title)}</strong><p>${escapeHtml(option.summary)}</p><small>预计范围：${escapeHtml(option.expectedFiles.join('、'))}</small><small>验证：${escapeHtml(option.verification.join('；'))}</small></div></article>`).join('')}</section>` : ''}<footer class="patch-gate ${options.length ? 'decision-ready' : ''}"><strong>${options.length ? '决策已验证，补丁仍阻断' : '补丁已阻断'}</strong><div>${options.length ? '<p>✓ ReuseDecision 已通过服务端证据、候选和 change budget 校验。</p><p>• 方案尚未经过人工批准、局部补丁生成和验证器检查。</p>' : investigation.patchGate.reasons.map((reason) => `<p>• ${escapeHtml(reason)}</p>`).join('')}</div></footer></article>`; }).join('')}</div>`;
+}
 
 function rootCauseHtml(item, index, frozen) {
   const evidence = item.evidence.map((entry) => `${entry.kind} · ${entry.revision}:${entry.path}:${entry.startLine}-${entry.endLine}`).join('；');
@@ -175,7 +180,7 @@ function workspaceHtml(current) {
   if (!current) return '<main class="loading">没有可审阅的条目</main>';
   const frozen = tone(current) === 'frozen'; const summary = model.state.summary;
   return `<main class="workspace"><header class="topbar"><div><span class="eyebrow">${escapeHtml(model.state.mode.toUpperCase())} · ROOT CAUSE REVIEW</span><h1>${escapeHtml(current.owner)}/${escapeHtml(current.repo)} <b>#${current.number}</b></h1></div><div class="top-actions"><label>审阅人<input id="reviewer" value="${escapeHtml(model.reviewer)}" placeholder="姓名或代号" /></label><button id="export" class="export" ${summary.frozen !== summary.total || model.saving ? 'disabled' : ''}>⇧ 导出冻结标签</button></div></header>
-    <section class="review-grid"><div class="diff-panel"><div class="pr-heading"><div><h2>${escapeHtml(current.title)}</h2><p>${escapeHtml(current.body || '该 PR 没有描述。')}</p></div><a href="${escapeHtml(current.sourceUrl)}" target="_blank" rel="noreferrer">在 GitHub 打开 ↗</a></div><div class="workspace-tabs"><button data-view="overview" class="${model.view === 'overview' ? 'active' : ''}">总览</button><button data-view="behavior" class="${model.view === 'behavior' ? 'active' : ''}">行为层 ${current.changeBrief.behaviorCards.length}</button><button data-view="change" class="${model.view === 'change' ? 'active' : ''}">Diff 证据</button><button data-view="context" class="${model.view === 'context' ? 'active' : ''}">Base / Head / 关系 ${current.contextPacket.available ? '✓' : '!'}</button></div>${model.view === 'overview' ? overviewPanelHtml(current) : model.view === 'behavior' ? behaviorPanelHtml(current) : model.view === 'change' ? changePanelHtml(current) : contextPanelHtml(current)}</div>
+    <section class="review-grid"><div class="diff-panel"><div class="pr-heading"><div><h2>${escapeHtml(current.title)}</h2><p>${escapeHtml(current.body || '该 PR 没有描述。')}</p></div><a href="${escapeHtml(current.sourceUrl)}" target="_blank" rel="noreferrer">在 GitHub 打开 ↗</a></div><div class="workspace-tabs"><button data-view="overview" class="${model.view === 'overview' ? 'active' : ''}">总览</button><button data-view="behavior" class="${model.view === 'behavior' ? 'active' : ''}">行为层 ${current.changeBrief.behaviorCards.length}</button>${current.reuseInvestigations ? `<button data-view="reuse" class="${model.view === 'reuse' ? 'active' : ''}">复用调查 ${current.reuseInvestigations.reduce((sum, item) => sum + item.candidates.length, 0)}</button>` : ''}<button data-view="change" class="${model.view === 'change' ? 'active' : ''}">Diff 证据</button><button data-view="context" class="${model.view === 'context' ? 'active' : ''}">Base / Head / 关系 ${current.contextPacket.available ? '✓' : '!'}</button></div>${model.view === 'overview' ? overviewPanelHtml(current) : model.view === 'behavior' ? behaviorPanelHtml(current) : model.view === 'reuse' ? reusePanelHtml(current) : model.view === 'change' ? changePanelHtml(current) : contextPanelHtml(current)}</div>
     <aside class="decision-panel"><div class="decision-scroll"><div class="decision-title"><div><span class="eyebrow">ROOT CAUSE CONTRACT</span><h2>${frozen ? '查看冻结结果' : '记录可验证根因'}</h2></div><span class="status-pill ${tone(current)}">${frozen ? '已冻结' : tone(current) === 'deferred' ? '暂缓' : '待判断'}</span></div>${decisionHtml(current)}<label class="notes">审阅备注（可选）<textarea id="notes" ${frozen ? 'disabled' : ''} placeholder="记录判断依据或不确定点…">${escapeHtml(model.notes)}</textarea></label>${model.message ? `<div class="message">${escapeHtml(model.message)}</div>` : ''}</div>
     <div class="decision-actions">${frozen ? '' : `<button id="defer" class="secondary" ${model.saving ? 'disabled' : ''}>Ⅱ 暂缓</button><button id="clean" class="clean" ${model.saving || (model.state.mode === 'gold' && !current.contextPacket.available) ? 'disabled' : ''}>⊘ 冻结为无根因</button><button id="freeze" class="primary" ${model.saving || !model.rootCauses.length || (model.state.mode === 'gold' && !current.contextPacket.available) ? 'disabled' : ''}>✓ 冻结 ${model.rootCauses.length} 条根因</button>`}</div><div class="case-nav"><button id="previous">← 上一条</button><span>${model.state.cases.indexOf(current) + 1} / ${summary.total}</span><button id="next">下一条 →</button></div></aside></section></main>`;
 }
@@ -246,6 +251,7 @@ function bindEvents() {
   document.querySelectorAll('[data-import-assistance]').forEach((button) => button.addEventListener('click', () => importAssistance(currentCase(), Number(button.dataset.importAssistance))));
   document.querySelectorAll('[data-brief-evidence]').forEach((button) => button.addEventListener('click', () => openBriefEvidence(button.dataset.briefEvidence)));
   document.querySelectorAll('[data-open-behavior]').forEach((button) => button.addEventListener('click', () => { syncDraft(); model.view = 'behavior'; render(); }));
+  document.querySelectorAll('[data-build-solution]').forEach((button) => button.addEventListener('click', () => requestSolutionOptions(button.dataset.buildSolution, button.dataset.candidateId)));
   document.querySelectorAll('[data-scope-path]').forEach((button) => button.addEventListener('click', () => {
     syncDraft(); const current = currentCase(); const filePath = button.dataset.scopePath;
     if (current.files.some((file) => file.path === filePath)) { model.activeFile = filePath; model.view = 'change'; render(); return; }
@@ -278,6 +284,23 @@ async function saveDecision(status, rootCauses) {
     const response = await fetch(`/api/decisions/${encodeURIComponent(item.id)}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ status, reviewer: model.reviewer.trim(), rootCauses, ...(model.notes.trim() ? { notes: model.notes.trim() } : {}) }) });
     const result = await response.json(); if (!response.ok) throw new Error(result.error ?? '保存失败');
     await loadState(item.id); selectCase(item.id); model.message = status === 'frozen' ? '根因答案已冻结，后续不能修改。' : '已暂缓；未形成金标。';
+  } catch (error) { model.message = error instanceof Error ? error.message : String(error); } finally { model.saving = false; render(); }
+}
+async function requestSolutionOptions(behaviorId, candidateId) {
+  const current = currentCase(); const investigation = current.reuseInvestigations?.find((item) => item.behaviorId === behaviorId);
+  const candidate = investigation?.candidates.find((item) => item.id === candidateId);
+  if (!investigation || !candidate) return;
+  model.saving = true; model.message = ''; render();
+  try {
+    const decision = {
+      behaviorId, goal: investigation.goal, searchScope: investigation.searchScope, candidates: investigation.candidates,
+      decision: candidate.fit === 'direct' ? 'reuse' : 'extend', selectedCandidateId: candidate.id,
+      justification: `${candidate.rationale} 方案必须保持现有外部契约并限制修改范围。`,
+      changeBudget: { maxFiles: Math.max(2, investigation.searchScope.changedFiles.length + 1), maxChangedSymbols: 5, publicContractChangeAllowed: false }
+    };
+    const response = await fetch('/api/reuse/options', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(decision) });
+    const result = await response.json(); if (!response.ok) throw new Error(result.error ?? '方案生成失败');
+    model.solutionOptions[`${current.id}:${behaviorId}`] = result.options; model.message = '已生成结构化方案；补丁仍保持阻断，直到批准并通过验证。';
   } catch (error) { model.message = error instanceof Error ? error.message : String(error); } finally { model.saving = false; render(); }
 }
 async function exportDataset() {

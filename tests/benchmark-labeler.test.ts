@@ -88,11 +88,13 @@ describe('review reasoning workbench', () => {
       files: [
         { path: 'src/Service.java', revision: 'base' as const, role: 'source' as const, language: 'Java', content: 'class Service { return guard(input); }\nclass End {}' },
         { path: 'src/Service.java', revision: 'head' as const, role: 'source' as const, language: 'Java', content: 'class Service { return load(input); }\nclass End {}' },
-        { path: 'src/Caller.java', revision: 'head' as const, role: 'source' as const, language: 'Java', content: 'class Caller { service.load(""); }' }
+        { path: 'src/Caller.java', revision: 'head' as const, role: 'source' as const, language: 'Java', content: 'class Caller { service.load(""); }' },
+        { path: 'src/ExistingGuard.java', revision: 'head' as const, role: 'source' as const, language: 'Java', content: 'class ExistingGuard { void load() {} }' }
       ],
       symbols: [
         { id: 'head:Service.load', name: 'Service.load', kind: 'method', path: 'src/Service.java', revision: 'head' as const, startLine: 1, endLine: 1 },
-        { id: 'head:Caller.run', name: 'Caller.run', kind: 'method', path: 'src/Caller.java', revision: 'head' as const, startLine: 1, endLine: 1 }
+        { id: 'head:Caller.run', name: 'Caller.run', kind: 'method', path: 'src/Caller.java', revision: 'head' as const, startLine: 1, endLine: 1 },
+        { id: 'head:ExistingGuard.load', name: 'ExistingGuard.load', kind: 'method', path: 'src/ExistingGuard.java', revision: 'head' as const, startLine: 1, endLine: 1 }
       ],
       relationships: [{
         fromSymbolId: 'head:Caller.run', toSymbolId: 'head:Service.load', type: 'calls' as const,
@@ -119,12 +121,15 @@ describe('review reasoning workbench', () => {
     const initialResponse = await fetch(`${baseUrl}/api/state`);
     expect(initialResponse.status).toBe(200);
     const initialText = await initialResponse.text();
-    expect(initialText).not.toMatch(/prediction|assistance|machineSuggestions/i);
+    expect(initialText).not.toMatch(/prediction|assistance|machineSuggestions|reuseInvestigations/i);
     const initialState = JSON.parse(initialText);
     expect(initialState.cases[0].contextPacket.relationships).toHaveLength(1);
     expect(initialState.cases[0].changeBrief.coverage.level).toBe('semantic');
     expect(initialState.cases[0].changeBrief.questions.some((question: { id: string }) => question.id.endsWith(':reuse'))).toBe(true);
     expect(initialState.cases[0].changeBrief.intent.evidenceIds).toEqual(['pr:title', 'pr:body']);
+    expect((await fetch(`${baseUrl}/api/reuse/options`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}'
+    })).status).toBe(403);
 
     const rootCause = {
       rootCauseId: 'empty-input-contract', category: 'correctness', severity: 'high', confidence: 'likely',
@@ -144,10 +149,45 @@ describe('review reasoning workbench', () => {
       body: JSON.stringify({ status: 'frozen', reviewer: 'reviewer-a', rootCauses: [rootCause] })
     });
     expect(saveResponse.status).toBe(200);
-    expect(await saveResponse.text()).not.toMatch(/prediction|assistance|machineSuggestions/i);
+    expect(await saveResponse.text()).not.toMatch(/prediction|assistance|machineSuggestions|reuseInvestigations/i);
 
     const frozenText = await (await fetch(`${baseUrl}/api/state`)).text();
-    expect(frozenText).not.toMatch(/prediction|assistance|machineSuggestions/i);
+    expect(frozenText).not.toMatch(/prediction|assistance|machineSuggestions|reuseInvestigations/i);
     expect(JSON.parse(frozenText).cases[0].decision.rootCauses[0].verification).toContain('caller test');
+
+    const assistedPort = await unusedPort();
+    const assistedDecisionsPath = path.join(directory, 'assisted-decisions.json');
+    const assistedChild = spawn(process.execPath, [
+      '--import', 'tsx', 'scripts/benchmark-labeler.ts', `--input=${inputPath}`, `--decisions=${assistedDecisionsPath}`,
+      `--legacy-decisions=${legacyPath}`, `--output=${path.join(directory, 'assisted-frozen.jsonl')}`,
+      `--context-dir=${contextDirectory}`, '--mode=assisted'
+    ], {
+      cwd: path.resolve(import.meta.dirname, '..'),
+      env: { ...process.env, BENCHMARK_LABELER_PORT: String(assistedPort) },
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+    children.push(assistedChild);
+    await waitForReady(assistedChild);
+    const assistedState = await (await fetch(`http://localhost:${assistedPort}/api/state`)).json() as any;
+    expect(assistedState.mode).toBe('assisted');
+    expect(assistedState.cases[0].assistance).toBeDefined();
+    expect(assistedState.cases[0].reuseInvestigations[0].candidates[0]).toMatchObject({
+      symbolName: 'ExistingGuard.load', relationship: 'same_contract', fit: 'direct'
+    });
+    expect(assistedState.cases[0].reuseInvestigations[0].patchGate.allowed).toBe(false);
+    const investigation = assistedState.cases[0].reuseInvestigations[0];
+    const selected = investigation.candidates[0];
+    const optionsResponse = await fetch(`http://localhost:${assistedPort}/api/reuse/options`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        behaviorId: investigation.behaviorId, goal: investigation.goal, searchScope: investigation.searchScope,
+        candidates: investigation.candidates, decision: 'reuse', selectedCandidateId: selected.id,
+        justification: 'Reuse the established load contract and keep this change local.',
+        changeBudget: { maxFiles: 2, maxChangedSymbols: 3, publicContractChangeAllowed: false }
+      })
+    });
+    expect(optionsResponse.status).toBe(200);
+    const optionsResult = await optionsResponse.json() as any;
+    expect(optionsResult.options[0]).toMatchObject({ strategy: 'reuse', candidateId: selected.id });
   }, 20_000);
 });

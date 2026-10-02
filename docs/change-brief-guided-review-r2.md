@@ -105,3 +105,8 @@ Still required before declaring R2 complete:
 
 Until that evidence is recorded, R2 is **implemented but not exited**.
 
+The next planning layer is documented in
+[`reuse-first-solution-planning-r3.md`](reuse-first-solution-planning-r3.md).
+It consumes R2 behavior cards and keeps all assisted reuse conclusions outside
+formal gold responses.
+
