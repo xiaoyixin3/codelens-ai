@@ -15,7 +15,7 @@ const emptyDraft = () => ({
   evidence: { kind: 'diff', path: '', revision: 'head', side: 'RIGHT', startLine: '', endLine: '', symbol: '', fact: '' }
 });
 const model = {
-  state: null, activeId: '', activeFile: '', activeContextKey: '', view: 'change', filter: 'all', query: '',
+  state: null, activeId: '', activeFile: '', activeContextKey: '', view: 'overview', filter: 'all', query: '',
   rootCauses: [], draft: emptyDraft(), notes: '', reviewer: localStorage.getItem('codelens-reviewer') ?? '',
   message: '', saving: false
 };
@@ -42,7 +42,7 @@ function selectCase(id) {
   model.notes = item?.decision?.notes ?? '';
   model.activeFile = item?.files[0]?.path ?? '';
   model.activeContextKey = item?.contextPacket?.files?.[0] ? contextKey(item.contextPacket.files[0]) : '';
-  model.view = 'change'; model.draft = emptyDraft(); model.message = ''; render();
+  model.view = 'overview'; model.draft = emptyDraft(); model.message = ''; render();
 }
 
 function renderDiff(patch, selectedEvidence) {
@@ -104,9 +104,35 @@ function contextPanelHtml(current) {
     <aside class="context-relations"><h4>符号定义</h4>${symbols.length ? symbols.map((symbol) => `<button data-symbol-line="${symbol.startLine}" data-symbol-name="${escapeHtml(symbol.id)}"><strong>${escapeHtml(symbol.name)}</strong><small>${escapeHtml(symbol.kind)} · L${symbol.startLine}-${symbol.endLine}</small></button>`).join('') : '<p>该文件没有已索引符号。</p>'}<h4>调用方与测试关系</h4>${related.length ? related.map((edge) => `<div class="relation"><b>${escapeHtml(edge.type)}</b><span>${escapeHtml(byId.get(edge.fromSymbolId)?.name ?? edge.fromSymbolId)} → ${escapeHtml(byId.get(edge.toSymbolId)?.name ?? edge.toSymbolId)}</span><small>${escapeHtml(edge.evidencePath)}:${edge.evidenceLine}</small></div>`).join('') : '<p>冻结包没有该文件的关系记录。</p>'}</aside></div>`;
 }
 
+function evidenceChipHtml(current, evidenceId) {
+  const evidence = current.changeBrief.evidence.find((item) => item.id === evidenceId);
+  if (!evidence) return '';
+  const location = evidence.path ? `${evidence.path}${evidence.startLine ? `:${evidence.startLine}` : ''}` : evidence.kind.replace('_', ' ');
+  return `<button class="evidence-chip" data-brief-evidence="${escapeHtml(evidence.id)}" title="${escapeHtml(evidence.label)}">↗ ${escapeHtml(location)}</button>`;
+}
+function statementHtml(current, statement) {
+  return `<div class="traceable-statement"><span class="epistemic ${statement.epistemicStatus}">${statement.epistemicStatus === 'fact' ? '事实' : statement.epistemicStatus === 'inference' ? '推断' : '未知'}</span><p>${escapeHtml(statement.text)}</p><div class="evidence-chips">${statement.evidenceIds.map((id) => evidenceChipHtml(current, id)).join('')}</div></div>`;
+}
+function questionHtml(current, question, index) {
+  return `<article class="guided-question"><span>${String(index + 1).padStart(2, '0')}</span><div><strong>${escapeHtml(question.question)}</strong><p>${escapeHtml(question.purpose)}</p><div class="evidence-chips">${question.evidenceIds.slice(0, 4).map((id) => evidenceChipHtml(current, id)).join('')}</div></div></article>`;
+}
+function overviewPanelHtml(current) {
+  const brief = current.changeBrief; const coverage = brief.coverage;
+  const ready = current.contextPacket.available;
+  return `<div class="overview-scroll"><section class="merge-verdict ${ready ? 'ready' : 'limited'}"><div><span>${ready ? 'READY FOR STRUCTURED REVIEW' : 'CONTEXT LIMITED'}</span><h3>${ready ? '上下文已冻结，可以按行为开始审阅' : '只能查看 Diff；正式金标应暂缓'}</h3></div><b>${coverage.level === 'semantic' ? 'SEMANTIC' : 'DIFF-ONLY'}</b></section>
+    <section class="brief-section"><div class="brief-heading"><div><span class="eyebrow">WHAT IS THIS CHANGE?</span><h3>意图与证据</h3></div><small>每句话必须可追溯或标记未知</small></div>${statementHtml(current, brief.intent)}</section>
+    <section class="coverage-strip"><div><strong>${coverage.changedFiles}</strong><span>变更文件</span></div><div><strong>${coverage.contextualFiles}</strong><span>上下文文件</span></div><div><strong>${coverage.indexedSymbols}</strong><span>索引符号</span></div><div><strong>${coverage.relationships}</strong><span>调用关系</span></div></section>
+    <section class="brief-section"><div class="brief-heading"><div><span class="eyebrow">REVIEW LAYERS</span><h3>按行为组织的变更地图</h3></div><button data-view="behavior">查看全部行为卡 →</button></div><div class="behavior-preview">${brief.behaviorCards.map((card, index) => `<button data-open-behavior="${index}"><span>0${index + 1}</span><div><strong>${escapeHtml(card.title)}</strong><small>${escapeHtml(card.summary.text)}</small><em>${card.unchangedCallers.length} 调用方 · ${card.relatedTests.length} 测试</em></div></button>`).join('')}</div></section>
+    <section class="brief-section attention"><div class="brief-heading"><div><span class="eyebrow">CHECK FIRST</span><h3>先回答这些中立问题</h3></div><small>不是机器结论</small></div><div class="question-list">${brief.questions.map((question, index) => questionHtml(current, question, index)).join('')}</div></section>
+    ${coverage.limitations.length ? `<section class="coverage-limitations"><strong>覆盖限制</strong>${coverage.limitations.map((item) => `<p>• ${escapeHtml(item)}</p>`).join('')}</section>` : ''}</div>`;
+}
+function behaviorPanelHtml(current) {
+  return `<div class="behavior-scroll">${current.changeBrief.behaviorCards.map((card, index) => `<article class="behavior-card" data-behavior-index="${index}"><header><span>BEHAVIOR ${String(index + 1).padStart(2, '0')}</span><h3>${escapeHtml(card.title)}</h3><p>${escapeHtml(card.summary.text)}</p></header><div class="behavior-columns"><section><h4>Before</h4>${card.before.map((statement) => statementHtml(current, statement)).join('')}</section><section><h4>After</h4>${card.after.map((statement) => statementHtml(current, statement)).join('')}</section></div><div class="scope-grid"><div><span>变更文件</span>${card.changedFiles.map((item) => `<button data-scope-path="${escapeHtml(item)}">${escapeHtml(item)}</button>`).join('')}</div><div><span>核心符号</span>${card.coreSymbols.length ? card.coreSymbols.map((item) => `<code>${escapeHtml(item)}</code>`).join('') : '<small>语义索引未提供</small>'}</div><div><span>未修改调用方</span>${card.unchangedCallers.length ? card.unchangedCallers.map((item) => `<code>${escapeHtml(item)}</code>`).join('') : '<small>未建立关系证据</small>'}</div><div><span>相关测试</span>${card.relatedTests.length ? card.relatedTests.map((item) => `<button data-scope-path="${escapeHtml(item)}">${escapeHtml(item)}</button>`).join('') : '<small>未发现关联测试证据</small>'}</div></div><section class="card-questions"><h4>Reviewer 检查清单</h4>${card.questions.map((question, questionIndex) => questionHtml(current, question, questionIndex)).join('')}</section></article>`).join('')}</div>`;
+}
+
 function rootCauseHtml(item, index, frozen) {
   const evidence = item.evidence.map((entry) => `${entry.kind} · ${entry.revision}:${entry.path}:${entry.startLine}-${entry.endLine}`).join('；');
-  return `<article class="root-cause-card"><div><span><b>${escapeHtml(item.severity)}</b>${escapeHtml(item.category)} · ${escapeHtml(item.confidence)}</span><strong>${escapeHtml(item.claim)}</strong><small>触发：${escapeHtml(item.trigger)}</small><small>影响：${escapeHtml(item.impact)}</small><code>${escapeHtml(evidence)}</code><small>验证：${escapeHtml(item.verification)}</small></div>${frozen ? '' : `<button data-remove-root="${index}" aria-label="移除">×</button>`}</article>`;
+  return `<article class="root-cause-card"><div><span><b>${escapeHtml(item.severity)}</b>${escapeHtml(item.category)} · ${escapeHtml(item.confidence)}</span><strong>${escapeHtml(item.claim)}</strong><details><summary>查看触发、影响、证据与解决方向</summary><small>触发：${escapeHtml(item.trigger)}</small><small>影响：${escapeHtml(item.impact)}</small><code>${escapeHtml(evidence)}</code>${item.acceptableFix ? `<small>可接受修复：${escapeHtml(item.acceptableFix)}</small>` : ''}<small>验证：${escapeHtml(item.verification)}</small></details></div>${frozen ? '' : `<button data-remove-root="${index}" aria-label="移除">×</button>`}</article>`;
 }
 function legacyHtml(current) {
   if (!current.legacyDrafts?.length) return '';
@@ -149,7 +175,7 @@ function workspaceHtml(current) {
   if (!current) return '<main class="loading">没有可审阅的条目</main>';
   const frozen = tone(current) === 'frozen'; const summary = model.state.summary;
   return `<main class="workspace"><header class="topbar"><div><span class="eyebrow">${escapeHtml(model.state.mode.toUpperCase())} · ROOT CAUSE REVIEW</span><h1>${escapeHtml(current.owner)}/${escapeHtml(current.repo)} <b>#${current.number}</b></h1></div><div class="top-actions"><label>审阅人<input id="reviewer" value="${escapeHtml(model.reviewer)}" placeholder="姓名或代号" /></label><button id="export" class="export" ${summary.frozen !== summary.total || model.saving ? 'disabled' : ''}>⇧ 导出冻结标签</button></div></header>
-    <section class="review-grid"><div class="diff-panel"><div class="pr-heading"><div><h2>${escapeHtml(current.title)}</h2><p>${escapeHtml(current.body || '该 PR 没有描述。')}</p></div><a href="${escapeHtml(current.sourceUrl)}" target="_blank" rel="noreferrer">在 GitHub 打开 ↗</a></div><div class="workspace-tabs"><button data-view="change" class="${model.view === 'change' ? 'active' : ''}">变更证据</button><button data-view="context" class="${model.view === 'context' ? 'active' : ''}">Base Head 全文与关系 ${current.contextPacket.available ? '✓' : '!'}</button></div>${model.view === 'change' ? changePanelHtml(current) : contextPanelHtml(current)}</div>
+    <section class="review-grid"><div class="diff-panel"><div class="pr-heading"><div><h2>${escapeHtml(current.title)}</h2><p>${escapeHtml(current.body || '该 PR 没有描述。')}</p></div><a href="${escapeHtml(current.sourceUrl)}" target="_blank" rel="noreferrer">在 GitHub 打开 ↗</a></div><div class="workspace-tabs"><button data-view="overview" class="${model.view === 'overview' ? 'active' : ''}">总览</button><button data-view="behavior" class="${model.view === 'behavior' ? 'active' : ''}">行为层 ${current.changeBrief.behaviorCards.length}</button><button data-view="change" class="${model.view === 'change' ? 'active' : ''}">Diff 证据</button><button data-view="context" class="${model.view === 'context' ? 'active' : ''}">Base / Head / 关系 ${current.contextPacket.available ? '✓' : '!'}</button></div>${model.view === 'overview' ? overviewPanelHtml(current) : model.view === 'behavior' ? behaviorPanelHtml(current) : model.view === 'change' ? changePanelHtml(current) : contextPanelHtml(current)}</div>
     <aside class="decision-panel"><div class="decision-scroll"><div class="decision-title"><div><span class="eyebrow">ROOT CAUSE CONTRACT</span><h2>${frozen ? '查看冻结结果' : '记录可验证根因'}</h2></div><span class="status-pill ${tone(current)}">${frozen ? '已冻结' : tone(current) === 'deferred' ? '暂缓' : '待判断'}</span></div>${decisionHtml(current)}<label class="notes">审阅备注（可选）<textarea id="notes" ${frozen ? 'disabled' : ''} placeholder="记录判断依据或不确定点…">${escapeHtml(model.notes)}</textarea></label>${model.message ? `<div class="message">${escapeHtml(model.message)}</div>` : ''}</div>
     <div class="decision-actions">${frozen ? '' : `<button id="defer" class="secondary" ${model.saving ? 'disabled' : ''}>Ⅱ 暂缓</button><button id="clean" class="clean" ${model.saving || (model.state.mode === 'gold' && !current.contextPacket.available) ? 'disabled' : ''}>⊘ 冻结为无根因</button><button id="freeze" class="primary" ${model.saving || !model.rootCauses.length || (model.state.mode === 'gold' && !current.contextPacket.available) ? 'disabled' : ''}>✓ 冻结 ${model.rootCauses.length} 条根因</button>`}</div><div class="case-nav"><button id="previous">← 上一条</button><span>${model.state.cases.indexOf(current) + 1} / ${summary.total}</span><button id="next">下一条 →</button></div></aside></section></main>`;
 }
@@ -186,6 +212,26 @@ function importAssistance(current, index) {
   model.message = '机器线索已载入，但仍需由你填写触发条件和影响并核验证据。'; render();
 }
 
+function openBriefEvidence(evidenceId) {
+  syncDraft();
+  const current = currentCase();
+  const evidence = current.changeBrief.evidence.find((item) => item.id === evidenceId);
+  if (!evidence?.path) {
+    model.message = '该证据来自 PR 标题或正文，已显示在总览意图区。'; render(); return;
+  }
+  if (evidence.kind === 'diff') {
+    model.activeFile = evidence.path; model.view = 'change'; render(); return;
+  }
+  const files = current.contextPacket.available ? current.contextPacket.files : [];
+  const target = files.find((file) => file.path === evidence.path && (!evidence.revision || file.revision === evidence.revision))
+    ?? files.find((file) => file.path === evidence.path && file.revision === 'head')
+    ?? files.find((file) => file.path === evidence.path);
+  if (!target) {
+    model.message = '该证据路径不在冻结上下文中。'; render(); return;
+  }
+  model.activeContextKey = contextKey(target); model.view = 'context'; render();
+}
+
 function bindEvents() {
   document.querySelectorAll('[data-filter]').forEach((button) => button.addEventListener('click', () => { model.filter = button.dataset.filter; render(); }));
   document.querySelectorAll('[data-case]').forEach((button) => button.addEventListener('click', () => selectCase(button.dataset.case)));
@@ -198,6 +244,14 @@ function bindEvents() {
   document.querySelectorAll('[data-remove-root]').forEach((button) => button.addEventListener('click', () => { model.rootCauses.splice(Number(button.dataset.removeRoot), 1); render(); }));
   document.querySelectorAll('[data-import-legacy]').forEach((button) => button.addEventListener('click', () => importLegacy(currentCase(), Number(button.dataset.importLegacy))));
   document.querySelectorAll('[data-import-assistance]').forEach((button) => button.addEventListener('click', () => importAssistance(currentCase(), Number(button.dataset.importAssistance))));
+  document.querySelectorAll('[data-brief-evidence]').forEach((button) => button.addEventListener('click', () => openBriefEvidence(button.dataset.briefEvidence)));
+  document.querySelectorAll('[data-open-behavior]').forEach((button) => button.addEventListener('click', () => { syncDraft(); model.view = 'behavior'; render(); }));
+  document.querySelectorAll('[data-scope-path]').forEach((button) => button.addEventListener('click', () => {
+    syncDraft(); const current = currentCase(); const filePath = button.dataset.scopePath;
+    if (current.files.some((file) => file.path === filePath)) { model.activeFile = filePath; model.view = 'change'; render(); return; }
+    const target = current.contextPacket.available ? current.contextPacket.files.find((file) => file.path === filePath && file.revision === 'head') ?? current.contextPacket.files.find((file) => file.path === filePath) : undefined;
+    if (target) { model.activeContextKey = contextKey(target); model.view = 'context'; render(); }
+  }));
   document.querySelector('#add-root')?.addEventListener('click', addRootCause); document.querySelector('#search')?.addEventListener('input', (event) => { model.query = event.target.value; render(); });
   document.querySelector('#reviewer')?.addEventListener('input', (event) => { model.reviewer = event.target.value; localStorage.setItem('codelens-reviewer', model.reviewer); });
   document.querySelector('#notes')?.addEventListener('input', (event) => { model.notes = event.target.value; });

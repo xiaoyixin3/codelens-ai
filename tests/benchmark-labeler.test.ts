@@ -120,7 +120,11 @@ describe('review reasoning workbench', () => {
     expect(initialResponse.status).toBe(200);
     const initialText = await initialResponse.text();
     expect(initialText).not.toMatch(/prediction|assistance|machineSuggestions/i);
-    expect(JSON.parse(initialText).cases[0].contextPacket.relationships).toHaveLength(1);
+    const initialState = JSON.parse(initialText);
+    expect(initialState.cases[0].contextPacket.relationships).toHaveLength(1);
+    expect(initialState.cases[0].changeBrief.coverage.level).toBe('semantic');
+    expect(initialState.cases[0].changeBrief.questions.some((question: { id: string }) => question.id.endsWith(':reuse'))).toBe(true);
+    expect(initialState.cases[0].changeBrief.intent.evidenceIds).toEqual(['pr:title', 'pr:body']);
 
     const rootCause = {
       rootCauseId: 'empty-input-contract', category: 'correctness', severity: 'high', confidence: 'likely',

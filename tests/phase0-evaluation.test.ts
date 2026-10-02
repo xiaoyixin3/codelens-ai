@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildNeutralChangeBrief,
+  ChangeBriefSchema,
   evaluatePhase0Evidence,
   Phase0CaseSchema,
   ReviewContextBundleSchema,
@@ -225,5 +227,60 @@ describe('Phase 0 evidence contract', () => {
     expect(ReviewContextBundleSchema.safeParse(bundle).success).toBe(true);
     bundle.files[0]!.path = '../secret.txt';
     expect(ReviewContextBundleSchema.safeParse(bundle).success).toBe(false);
+  });
+
+  it('builds evidence-traceable behavior cards and neutral review questions', () => {
+    const replayCase = {
+      id: 'brief-case',
+      context: {
+        owner: 'example', repo: 'service', number: 9, title: 'Route requests through the shared service',
+        body: 'Preserve the existing caller contract while consolidating dispatch.',
+        baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40),
+        files: [
+          { path: 'src/A.java', status: 'modified' as const, additions: 2, deletions: 1, patch: '@@ -1 +1 @@\n-old\n+new' },
+          { path: 'src/B.java', status: 'modified' as const, additions: 1, deletions: 1, patch: '@@ -1 +1 @@\n-old\n+new' }
+        ]
+      },
+      expectedFindings: [], approval: { status: 'candidate' as const },
+      provenance: { kind: 'historical_pr' as const, sourceUrl: 'https://github.com/example/service/pull/9', repositoryLicense: 'Apache-2.0', collectedAt: '2026-10-02T10:00:00+08:00' }
+    };
+    const context = ReviewContextBundleSchema.parse({
+      version: 1, caseId: 'brief-case', packetId: 'packet-brief', digest: 'e'.repeat(64),
+      generatedAt: '2026-10-02T10:05:00+08:00', baseSha: replayCase.context.baseSha, headSha: replayCase.context.headSha,
+      files: [
+        { path: 'src/A.java', revision: 'base', role: 'source', content: 'class A {}' },
+        { path: 'src/A.java', revision: 'head', role: 'source', content: 'class A {}' },
+        { path: 'src/B.java', revision: 'base', role: 'source', content: 'class B {}' },
+        { path: 'src/B.java', revision: 'head', role: 'source', content: 'class B {}' },
+        { path: 'src/Caller.java', revision: 'head', role: 'source', content: 'class Caller {}' },
+        { path: 'src/FlowTest.java', revision: 'head', role: 'test', content: 'class FlowTest {}' }
+      ],
+      symbols: [
+        { id: 'base:A', name: 'A.dispatch', kind: 'method', path: 'src/A.java', revision: 'base', startLine: 1, endLine: 1 },
+        { id: 'head:A', name: 'A.dispatch', kind: 'method', path: 'src/A.java', revision: 'head', startLine: 1, endLine: 1 },
+        { id: 'base:B', name: 'B.send', kind: 'method', path: 'src/B.java', revision: 'base', startLine: 1, endLine: 1 },
+        { id: 'head:B', name: 'B.send', kind: 'method', path: 'src/B.java', revision: 'head', startLine: 1, endLine: 1 },
+        { id: 'head:Caller', name: 'Caller.run', kind: 'method', path: 'src/Caller.java', revision: 'head', startLine: 1, endLine: 1 },
+        { id: 'head:Test', name: 'FlowTest.dispatches', kind: 'method', path: 'src/FlowTest.java', revision: 'head', startLine: 1, endLine: 1 }
+      ],
+      relationships: [
+        { fromSymbolId: 'head:A', toSymbolId: 'head:B', type: 'calls', evidencePath: 'src/A.java', evidenceLine: 1 },
+        { fromSymbolId: 'head:Caller', toSymbolId: 'head:A', type: 'calls', evidencePath: 'src/Caller.java', evidenceLine: 1 },
+        { fromSymbolId: 'head:Test', toSymbolId: 'head:B', type: 'tests', evidencePath: 'src/FlowTest.java', evidenceLine: 1 }
+      ],
+      limitations: []
+    });
+    const brief = buildNeutralChangeBrief(replayCase, context);
+    expect(ChangeBriefSchema.safeParse(brief).success).toBe(true);
+    expect(brief.behaviorCards).toHaveLength(1);
+    expect(brief.behaviorCards[0]?.changedFiles).toEqual(['src/A.java', 'src/B.java']);
+    expect(brief.behaviorCards[0]?.unchangedCallers).toContain('Caller.run');
+    expect(brief.behaviorCards[0]?.relatedTests).toContain('src/FlowTest.java');
+    expect(brief.questions.some((question) => question.id.endsWith(':reuse'))).toBe(true);
+    expect(brief.questions.find((question) => question.id.endsWith(':callers'))?.evidenceIds).toEqual(['relationship:1']);
+    expect(brief.questions.find((question) => question.id.endsWith(':tests'))?.evidenceIds).toEqual([
+      'test:head:src/FlowTest.java', 'relationship:2'
+    ]);
+    expect(brief.intent.evidenceIds).toEqual(['pr:title', 'pr:body']);
   });
 });

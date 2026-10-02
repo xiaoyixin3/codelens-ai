@@ -108,3 +108,8 @@ The old file is never modified.
 The R1 implementation changes the labelling instrument; it does not by itself
 complete the Phase 0 real-sample evidence gate or replace qualified independent
 Reviewers.
+
+The next implemented product layer is documented in
+[`change-brief-guided-review-r2.md`](change-brief-guided-review-r2.md). R2 adds
+the evidence-traceable change map and guided behavior review while preserving
+this R1 gold-isolation boundary.

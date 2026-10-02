@@ -199,6 +199,243 @@ export function computeReviewContextBundleDigest(value: Omit<ReviewContextBundle
   return createHash('sha256').update(canonicalJson(value), 'utf8').digest('hex');
 }
 
+export const ChangeBriefEvidenceSchema = z.object({
+  id: z.string().trim().min(1).max(300),
+  kind: z.enum(['pr_title', 'pr_body', 'diff', 'source', 'symbol', 'relationship', 'test']),
+  label: z.string().trim().min(1).max(1_000),
+  path: SafeContextPathSchema.optional(),
+  revision: z.enum(['base', 'head']).optional(),
+  startLine: z.number().int().positive().optional(),
+  endLine: z.number().int().positive().optional()
+}).superRefine((value, context) => {
+  if ((value.startLine === undefined) !== (value.endLine === undefined)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['startLine'], message: 'Evidence line ranges require both startLine and endLine.' });
+  }
+  if (value.startLine !== undefined && value.endLine !== undefined && value.endLine < value.startLine) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['endLine'], message: 'Evidence endLine must be greater than or equal to startLine.' });
+  }
+});
+
+export const TraceableStatementSchema = z.object({
+  text: z.string().trim().min(1).max(2_000),
+  epistemicStatus: z.enum(['fact', 'inference', 'unknown']),
+  evidenceIds: z.array(z.string().trim().min(1).max(300)).max(100)
+}).superRefine((value, context) => {
+  if (value.epistemicStatus === 'fact' && value.evidenceIds.length === 0) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['evidenceIds'], message: 'Fact statements require evidence.' });
+  }
+});
+
+export const GuidedReviewQuestionSchema = z.object({
+  id: z.string().trim().min(1).max(300),
+  question: z.string().trim().min(1).max(1_000),
+  purpose: z.string().trim().min(1).max(1_000),
+  evidenceIds: z.array(z.string().trim().min(1).max(300)).min(1).max(100)
+});
+
+export const BehaviorChangeCardSchema = z.object({
+  id: z.string().trim().min(1).max(300),
+  title: z.string().trim().min(1).max(500),
+  summary: TraceableStatementSchema,
+  changedFiles: z.array(SafeContextPathSchema).min(1).max(200),
+  coreSymbols: z.array(z.string().trim().min(1).max(500)).max(500),
+  unchangedCallers: z.array(z.string().trim().min(1).max(500)).max(500),
+  relatedTests: z.array(SafeContextPathSchema).max(500),
+  before: z.array(TraceableStatementSchema).min(1).max(100),
+  after: z.array(TraceableStatementSchema).min(1).max(100),
+  questions: z.array(GuidedReviewQuestionSchema).min(1).max(20)
+});
+
+export const ChangeBriefSchema = z.object({
+  version: z.literal(1),
+  caseId: z.string().trim().min(1).max(160),
+  sourcePacketId: z.string().trim().min(1).max(160).optional(),
+  intent: TraceableStatementSchema,
+  coverage: z.object({
+    level: z.enum(['semantic', 'diff-only']),
+    changedFiles: z.number().int().nonnegative(),
+    contextualFiles: z.number().int().nonnegative(),
+    indexedSymbols: z.number().int().nonnegative(),
+    relationships: z.number().int().nonnegative(),
+    limitations: z.array(z.string().trim().min(1).max(1_000)).max(100)
+  }),
+  evidence: z.array(ChangeBriefEvidenceSchema).min(1).max(100_000),
+  behaviorCards: z.array(BehaviorChangeCardSchema).min(1).max(500),
+  questions: z.array(GuidedReviewQuestionSchema).min(1).max(50)
+}).superRefine((value, context) => {
+  const evidenceIds = new Set(value.evidence.map((item) => item.id));
+  if (evidenceIds.size !== value.evidence.length) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['evidence'], message: 'Change Brief evidence ids must be unique.' });
+  }
+  const statements = [value.intent, ...value.behaviorCards.flatMap((card) => [card.summary, ...card.before, ...card.after])];
+  const questions = [...value.questions, ...value.behaviorCards.flatMap((card) => card.questions)];
+  for (const [index, statement] of statements.entries()) {
+    if (statement.evidenceIds.some((id) => !evidenceIds.has(id))) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['behaviorCards', index], message: 'Statement references unknown evidence.' });
+    }
+  }
+  for (const [index, question] of questions.entries()) {
+    if (question.evidenceIds.some((id) => !evidenceIds.has(id))) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['questions', index], message: 'Question references unknown evidence.' });
+    }
+  }
+});
+
+export type ChangeBrief = z.infer<typeof ChangeBriefSchema>;
+
+function unique<T>(values: T[]): T[] { return [...new Set(values)]; }
+function fileName(value: string): string { return value.split('/').at(-1) ?? value; }
+
+export function buildNeutralChangeBrief(item: ReplayCase, bundle?: ReviewContextBundle): ChangeBrief {
+  const evidence: z.infer<typeof ChangeBriefEvidenceSchema>[] = [{ id: 'pr:title', kind: 'pr_title', label: item.context.title }];
+  if (item.context.body.trim()) evidence.push({ id: 'pr:body', kind: 'pr_body', label: item.context.body.trim() });
+  const changedPaths = new Set(item.context.files.map((file) => file.path));
+  for (const file of item.context.files) {
+    evidence.push({ id: `diff:${file.path}`, kind: 'diff', label: `${file.status}: +${file.additions} -${file.deletions}`, path: file.path });
+  }
+  for (const symbol of bundle?.symbols ?? []) {
+    evidence.push({ id: `symbol:${symbol.id}`, kind: 'symbol', label: `${symbol.kind} ${symbol.name}`, path: symbol.path, revision: symbol.revision, startLine: symbol.startLine, endLine: symbol.endLine });
+  }
+  for (const [index, edge] of (bundle?.relationships ?? []).entries()) {
+    evidence.push({ id: `relationship:${index}`, kind: 'relationship', label: `${edge.fromSymbolId} ${edge.type} ${edge.toSymbolId}`, path: edge.evidencePath, startLine: edge.evidenceLine, endLine: edge.evidenceLine });
+  }
+  for (const file of bundle?.files.filter((candidate) => candidate.role === 'test') ?? []) {
+    evidence.push({ id: `test:${file.revision}:${file.path}`, kind: 'test', label: `${file.revision} test file`, path: file.path, revision: file.revision });
+  }
+
+  const symbolsById = new Map((bundle?.symbols ?? []).map((symbol) => [symbol.id, symbol]));
+  const testPathsInBundle = new Set((bundle?.files ?? []).filter((file) => file.role === 'test').map((file) => file.path));
+  const parents = new Map([...changedPaths].map((file) => [file, file]));
+  const find = (value: string): string => {
+    const parent = parents.get(value) ?? value;
+    if (parent === value) return value;
+    const root = find(parent); parents.set(value, root); return root;
+  };
+  const join = (left: string, right: string): void => {
+    const leftRoot = find(left); const rightRoot = find(right);
+    if (leftRoot !== rightRoot) parents.set(rightRoot, leftRoot);
+  };
+  for (const edge of bundle?.relationships ?? []) {
+    const from = symbolsById.get(edge.fromSymbolId); const to = symbolsById.get(edge.toSymbolId);
+    if (from && to && changedPaths.has(from.path) && changedPaths.has(to.path)) join(from.path, to.path);
+  }
+  const groups = new Map<string, string[]>();
+  for (const file of changedPaths) {
+    const root = find(file); groups.set(root, [...(groups.get(root) ?? []), file]);
+  }
+
+  const behaviorCards = [...groups.values()].map((files, cardIndex) => {
+    const groupPaths = new Set(files);
+    const core = (bundle?.symbols ?? []).filter((symbol) => groupPaths.has(symbol.path));
+    const coreIds = new Set(core.map((symbol) => symbol.id));
+    const relatedEdges = (bundle?.relationships ?? []).map((edge, index) => ({ edge, index })).filter(({ edge }) => coreIds.has(edge.fromSymbolId) || coreIds.has(edge.toSymbolId));
+    const callerEdges = relatedEdges.filter(({ edge }) => {
+      const from = symbolsById.get(edge.fromSymbolId);
+      return coreIds.has(edge.toSymbolId) && from !== undefined && !groupPaths.has(from.path) && !testPathsInBundle.has(from.path);
+    });
+    const callerSymbols = callerEdges
+      .map(({ edge }) => symbolsById.get(edge.fromSymbolId))
+      .filter((symbol): symbol is NonNullable<typeof symbol> => symbol !== undefined && !groupPaths.has(symbol.path) && !testPathsInBundle.has(symbol.path));
+    const testPaths = unique([
+      ...(bundle?.files.filter((file) => file.role === 'test' && groupPaths.has(file.path)).map((file) => file.path) ?? []),
+      ...relatedEdges.flatMap(({ edge }) => {
+        const from = symbolsById.get(edge.fromSymbolId); const to = symbolsById.get(edge.toSymbolId);
+        return [from, to].filter((symbol) => symbol && !groupPaths.has(symbol.path))
+          .filter((symbol) => bundle?.files.some((file) => file.path === symbol!.path && file.role === 'test'))
+          .map((symbol) => symbol!.path);
+      })
+    ]);
+    const baseSymbols = unique(core.filter((symbol) => symbol.revision === 'base').map((symbol) => symbol.name));
+    const headSymbols = unique(core.filter((symbol) => symbol.revision === 'head').map((symbol) => symbol.name));
+    const diffEvidence = files.map((file) => `diff:${file}`);
+    const baseEvidence = core.filter((symbol) => symbol.revision === 'base').map((symbol) => `symbol:${symbol.id}`);
+    const headEvidence = core.filter((symbol) => symbol.revision === 'head').map((symbol) => `symbol:${symbol.id}`);
+    const relationshipEvidence = relatedEdges.map(({ index }) => `relationship:${index}`);
+    const callerRelationshipEvidence = callerEdges.map(({ index }) => `relationship:${index}`);
+    const testRelationshipEvidence = relatedEdges.filter(({ edge }) => {
+      const from = symbolsById.get(edge.fromSymbolId); const to = symbolsById.get(edge.toSymbolId);
+      return [from, to].some((symbol) => symbol !== undefined && testPathsInBundle.has(symbol.path));
+    }).map(({ index }) => `relationship:${index}`);
+    const testEvidence = testPaths.flatMap((testPath) => (bundle?.files ?? []).filter((file) => file.path === testPath && file.role === 'test').map((file) => `test:${file.revision}:${file.path}`));
+    const additions = item.context.files.filter((file) => groupPaths.has(file.path)).reduce((sum, file) => sum + file.additions, 0);
+    const deletions = item.context.files.filter((file) => groupPaths.has(file.path)).reduce((sum, file) => sum + file.deletions, 0);
+    const titleSymbols = unique(headSymbols.length ? headSymbols : baseSymbols).slice(0, 2);
+    const cardId = `behavior:${cardIndex + 1}`;
+    const anchorEvidence = unique([...diffEvidence, ...baseEvidence, ...headEvidence, ...relationshipEvidence, ...testEvidence]);
+    const questions: z.infer<typeof GuidedReviewQuestionSchema>[] = [{
+      id: `${cardId}:contract`,
+      question: 'Base 到 Head 是否改变了返回值、异常、权限、数据写入或副作用契约？',
+      purpose: '先比较行为契约，再判断代码写法；不能仅根据增删行作结论。',
+      evidenceIds: unique([...diffEvidence, ...baseEvidence, ...headEvidence])
+    }, {
+      id: `${cardId}:reuse`,
+      question: '仓库中是否已有承担相同契约或调用角色的实现可以复用、扩展或抽取？',
+      purpose: '在提出新实现前建立复用候选；本问题不代表已经完成 R3 检索。',
+      evidenceIds: anchorEvidence
+    }];
+    if (callerSymbols.length) questions.push({
+      id: `${cardId}:callers`, question: '这些未修改调用方是否仍满足 Head 版本的输入、输出和失败语义？',
+      purpose: '检查变化是否越过文件边界影响仍依赖旧契约的调用者。', evidenceIds: callerRelationshipEvidence
+    });
+    if (testPaths.length) questions.push({
+      id: `${cardId}:tests`, question: '现有测试覆盖的是变化后的生产入口，还是只覆盖了新增实现本身？',
+      purpose: '避免测试通过但真实调用路径未被执行。', evidenceIds: unique([...testEvidence, ...testRelationshipEvidence])
+    });
+    else questions.push({
+      id: `${cardId}:missing-tests`, question: '哪些生产入口应验证这个变化，但冻结上下文中没有关联测试证据？',
+      purpose: '把测试覆盖缺口标记为待核查事实，而不是直接断言缺少测试。', evidenceIds: diffEvidence
+    });
+    return {
+      id: cardId,
+      title: titleSymbols.length ? titleSymbols.join(' / ') : files.map(fileName).join(' / '),
+      summary: {
+        text: `${files.length} 个关联变更文件，共 +${additions} / -${deletions} 行；冻结上下文连接到 ${callerSymbols.length} 个未修改调用方和 ${testPaths.length} 个测试文件。`,
+        epistemicStatus: 'fact' as const,
+        evidenceIds: anchorEvidence
+      },
+      changedFiles: files,
+      coreSymbols: unique(core.map((symbol) => symbol.name)),
+      unchangedCallers: unique(callerSymbols.map((symbol) => symbol.name)),
+      relatedTests: testPaths,
+      before: [{
+        text: baseSymbols.length ? `Base 定义包含：${baseSymbols.join('、')}。` : '冻结上下文未提供这些变更文件的 Base 符号定义。',
+        epistemicStatus: baseSymbols.length ? 'fact' as const : 'unknown' as const,
+        evidenceIds: baseSymbols.length ? baseEvidence : []
+      }],
+      after: [{
+        text: headSymbols.length ? `Head 定义包含：${headSymbols.join('、')}。` : '冻结上下文未提供这些变更文件的 Head 符号定义。',
+        epistemicStatus: headSymbols.length ? 'fact' as const : 'unknown' as const,
+        evidenceIds: headSymbols.length ? headEvidence : []
+      }],
+      questions
+    };
+  });
+
+  const intentEvidence = item.context.body.trim() ? ['pr:title', 'pr:body'] : ['pr:title'];
+  const allQuestions = behaviorCards.flatMap((card) => card.questions).slice(0, 5);
+  return ChangeBriefSchema.parse({
+    version: 1,
+    caseId: item.id,
+    ...(bundle ? { sourcePacketId: bundle.packetId } : {}),
+    intent: {
+      text: item.context.body.trim() ? `${item.context.title} — ${item.context.body.trim()}` : `${item.context.title}；PR 未提供正文，实际意图仍需确认。`,
+      epistemicStatus: item.context.body.trim() ? 'fact' : 'unknown',
+      evidenceIds: intentEvidence
+    },
+    coverage: {
+      level: bundle?.symbols.length ? 'semantic' : 'diff-only',
+      changedFiles: item.context.files.length,
+      contextualFiles: bundle?.files.length ?? 0,
+      indexedSymbols: bundle?.symbols.length ?? 0,
+      relationships: bundle?.relationships.length ?? 0,
+      limitations: bundle?.limitations ?? ['Frozen repository context is unavailable.']
+    },
+    evidence,
+    behaviorCards,
+    questions: allQuestions
+  });
+}
+
 export const ReviewWorkbenchDecisionSchema = z.object({
   status: z.enum(['frozen', 'deferred']),
   mode: z.enum(['gold', 'assisted']),

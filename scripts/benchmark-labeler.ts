@@ -3,6 +3,7 @@ import path from 'node:path';
 import Fastify from 'fastify';
 import { z } from 'zod';
 import {
+  buildNeutralChangeBrief,
   computeReviewContextBundleDigest,
   ReplayCaseSchema,
   ReviewContextBundleSchema,
@@ -346,12 +347,14 @@ app.get('/api/state', async () => {
       }
       const decision = store.decisions[item.id];
       const bundle = contextBundles.get(item.id);
+      const changeBrief = buildNeutralChangeBrief(item, bundle);
       const result: Record<string, unknown> = {
         id: item.id,
         ...item.context,
         sourceUrl: item.provenance.sourceUrl,
         repositoryLicense: item.provenance.repositoryLicense,
         collectedAt: item.provenance.collectedAt,
+        changeBrief,
         contextPacket: bundle ? {
           available: true,
           packetId: bundle.packetId,
