@@ -49,10 +49,13 @@ The complete release gate passed:
 - release manifest: `automatedReady: true`, including migration 013 and no
   missing or unpinned workflow requirements.
 
+## Follow-on evidence
+
+Production decision and option persistence is recorded separately in
+[`r3-audited-decision-persistence-2026-10-03.md`](r3-audited-decision-persistence-2026-10-03.md).
+
 ## Remaining R3 exit work
 
-- persist a human-approved `ReuseDecision` and selected `SolutionOption` with
-  the same provenance;
 - generate a genuinely local preview after approval;
 - pass that preview through `verifyPatchRelease` in the production worker;
 - run calibrated samples demonstrating a candidate or valid new-proof for

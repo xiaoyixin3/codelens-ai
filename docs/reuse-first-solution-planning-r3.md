@@ -1,6 +1,6 @@
 # R3 Reuse-first Solution Planning
 
-Status: production graph retrieval integrated on 2026-10-03; decision persistence and patch-preview exit evidence remain open
+Status: production graph retrieval and audited decision persistence integrated on 2026-10-03; patch-preview exit evidence remains open
 Baseline: [`review-reasoning-and-reuse-first-improvement-plan.md`](review-reasoning-and-reuse-first-improvement-plan.md)  
 Architecture decision: [`ADR 0013`](adr/0013-reuse-decision-patch-gate.md)
 
@@ -43,6 +43,14 @@ The Java `SemanticReusePlanner` provides the production graph adapter and
 serializable investigation record. Migration `013_semantic_reuse_investigation`
 stores that record on the review analysis without changing historical
 migrations.
+
+The API now exposes installation-scoped `GET` and `POST` operations at
+`/api/v2/reviews/{reviewRunId}/reuse-planning`. A submitted decision is checked
+again against the persisted investigation; the server derives its evidence,
+requires explicit candidate rejection before `new`, and saves the decision and
+selected option as an append-only revision. `expectedRevision` prevents a stale
+Reviewer page from silently replacing a newer decision. Migration
+`014_reuse_decisions` stores the immutable history and one current revision.
 
 ## Retrieval signals
 
@@ -88,12 +96,13 @@ Implemented:
 - production Java whole-repository candidate retrieval;
 - exact evidence for both sides of a shared-caller claim;
 - persisted Base/Head SHA, adapter, build-model, coverage, and candidate audit data;
-- GitHub summary visibility while the patch gate remains closed.
+- GitHub summary visibility while the patch gate remains closed;
+- installation-scoped approval API using the shared constant-time admin boundary;
+- persisted, provenance-bound `ReuseDecision` and selected `SolutionOption` revisions;
+- optimistic revision checks and retained superseded decisions.
 
 Still open before declaring R3 complete:
 
-- persist reviewer decisions and selected options with SHA and index-version
-  audit metadata (the investigation itself is now persisted);
 - generate a genuinely local patch preview only after option approval;
 - route that preview through the publication gate in the production worker;
 - run calibrated samples proving every code modification suggestion has either

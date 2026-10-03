@@ -6,6 +6,7 @@ import ai.codelens.contracts.Models;
 import ai.codelens.semantic.JdbcSemanticSnapshotStore;
 import ai.codelens.migration.MigrationSchemaVerifier;
 import ai.codelens.semantic.JdbcSemanticReviewAuditStore;
+import ai.codelens.semantic.ReuseDecisionService;
 import ai.codelens.semantic.SemanticModels;
 import ai.codelens.semantic.SemanticReusePlanner;
 import ai.codelens.semantic.SemanticSnapshotStore;
@@ -22,6 +23,7 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @EnabledIfEnvironmentVariable(named = "CODELENS_INTEGRATION_TESTS", matches = "true")
@@ -71,10 +73,15 @@ class PostgresIntegrationTest {
             SemanticModels.Symbol symbol = new SemanticModels.Symbol("java:type:integration.Fixture",
                     SemanticModels.SymbolKind.TYPE, "integration.Fixture", "Fixture",
                     "src/main/java/integration/Fixture.java", 1, 2, false, true);
+            SemanticModels.Symbol unchanged = new SemanticModels.Symbol("java:type:integration.Helper",
+                    SemanticModels.SymbolKind.TYPE, "integration.Helper", "Helper",
+                    "src/main/java/integration/Helper.java", 1, 2, false, true);
             SemanticModels.Index semanticIndex = new SemanticModels.Index(semanticKey.commitSha(), semanticKey.adapterVersion(),
-                    semanticKey.buildModelHash(), List.of(new SemanticModels.FileStatus(symbol.path(), "indexed", "", "hash", true)),
-                    List.of(symbol), List.of(), new SemanticModels.Coverage(SemanticModels.CoverageLevel.SEMANTIC,
-                    1, 1, 0, 0, 1, 0, 0, Map.of("incremental_reused_file", 1L)));
+                    semanticKey.buildModelHash(), List.of(
+                    new SemanticModels.FileStatus(symbol.path(), "indexed", "", "hash", true),
+                    new SemanticModels.FileStatus(unchanged.path(), "indexed", "", "hash-2", true)),
+                    List.of(symbol, unchanged), List.of(), new SemanticModels.Coverage(SemanticModels.CoverageLevel.SEMANTIC,
+                    2, 2, 0, 0, 2, 0, 0, Map.of("incremental_reused_file", 2L)));
             semantic.save(semanticKey, semanticIndex);
             assertEquals(semanticIndex, semantic.load(semanticKey).orElseThrow());
             Models.ImpactSummary semanticImpact = new Models.ImpactSummary("low", 10, 1, 1, List.of(), "integration");
@@ -88,6 +95,35 @@ class PostgresIntegrationTest {
             assertEquals(semanticKey.commitSha(), jdbc.queryForObject(
                     "SELECT reuse_investigation #>> '{provenance,headSha}' FROM semantic_review_analyses WHERE review_run_id=?::uuid",
                     String.class, runId));
+
+            ReuseDecisionStore reuseDecisions = new ReuseDecisionStore(jdbc, dataSource, json);
+            ReuseDecisionService.Submission reuseSubmission = new ReuseDecisionService.Submission(0,
+                    reuse.id(), reuse.provenance().baseSha(), reuse.provenance().headSha(),
+                    reuse.provenance().adapterVersion(), reuse.provenance().baseBuildModelHash(),
+                    reuse.provenance().headBuildModelHash(), "Add the smallest repository-native implementation",
+                    "new", "", Map.of(), "No retrieved candidate satisfies the required responsibility.",
+                    new ReuseDecisionService.ChangeBudget(2, 4, false),
+                    new ReuseDecisionService.OptionSubmission("new", "Add a bounded implementation",
+                            "Add one local implementation without changing the public contract.", "",
+                            List.of(symbol.path()), List.of(symbol.qualifiedName()),
+                            List.of("Run the affected integration tests."), List.of("A new local responsibility is introduced.")));
+            assertEquals(1, reuseDecisions.save(installation, runId, reuseSubmission, "integration-reviewer").revision());
+            ReuseDecisionService.Submission revisionTwo = new ReuseDecisionService.Submission(1,
+                    reuseSubmission.investigationId(), reuseSubmission.baseSha(), reuseSubmission.headSha(),
+                    reuseSubmission.adapterVersion(), reuseSubmission.baseBuildModelHash(), reuseSubmission.headBuildModelHash(),
+                    reuseSubmission.goal(), reuseSubmission.decision(), reuseSubmission.selectedCandidateId(),
+                    reuseSubmission.candidateRejections(), reuseSubmission.justification(), reuseSubmission.changeBudget(),
+                    reuseSubmission.option());
+            assertEquals(2, reuseDecisions.save(installation, runId, revisionTwo, "integration-reviewer").revision());
+            String decisionRunId = runId;
+            assertThrows(ReuseDecisionStore.DecisionConflictException.class,
+                    () -> reuseDecisions.save(installation, decisionRunId, reuseSubmission, "stale-reviewer"));
+            assertEquals(2, reuseDecisions.get(installation, runId).currentDecision().revision());
+            assertEquals(2, jdbc.queryForObject(
+                    "SELECT count(*) FROM reuse_decisions WHERE review_run_id=?::uuid", Integer.class, runId));
+            assertEquals(1, jdbc.queryForObject(
+                    "SELECT count(*) FROM reuse_decisions WHERE review_run_id=?::uuid AND superseded_at IS NOT NULL",
+                    Integer.class, runId));
 
             providers.delete(installation, providerId, "integration-test"); assertTrue(providers.list(installation).isEmpty());
         } finally {

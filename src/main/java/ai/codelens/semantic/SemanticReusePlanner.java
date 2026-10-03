@@ -15,7 +15,7 @@ public final class SemanticReusePlanner {
 
     public Investigation investigate(SemanticModels.Index base, SemanticModels.Index head, Set<String> changedPaths) {
         Set<String> normalizedPaths = new LinkedHashSet<>();
-        changedPaths.forEach(path -> normalizedPaths.add(normalize(path)));
+        changedPaths.stream().map(SemanticReusePlanner::normalize).sorted().forEach(normalizedPaths::add);
         List<SemanticModels.Symbol> changedSymbols = head.symbols().stream()
                 .filter(symbol -> normalizedPaths.contains(symbol.path()))
                 .sorted(Comparator.comparing(SemanticModels.Symbol::stableKey))
