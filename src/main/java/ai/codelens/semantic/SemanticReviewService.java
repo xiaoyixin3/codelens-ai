@@ -28,6 +28,7 @@ public final class SemanticReviewService {
     private final GitHubRepositoryWorkspace workspaces;
     private final SemanticIndexService indexes;
     private final SemanticReviewAuditStore audits;
+    private final SemanticReusePlanner reusePlanner;
 
     public SemanticReviewService(boolean enabled, Set<String> enabledRepositories,
                                  GitHubRepositoryWorkspace workspaces, SemanticIndexService indexes,
@@ -39,6 +40,7 @@ public final class SemanticReviewService {
         this.workspaces = java.util.Objects.requireNonNull(workspaces);
         this.indexes = java.util.Objects.requireNonNull(indexes);
         this.audits = java.util.Objects.requireNonNull(audits);
+        this.reusePlanner = new SemanticReusePlanner();
     }
 
     public Result analyze(long repositoryId, Models.ReviewJob job, Models.PullRequest pull) {
@@ -61,8 +63,9 @@ public final class SemanticReviewService {
             }
             Models.ImpactSummary impact = impact(base, head, changedPaths);
             Models.Coverage coverage = coverage(base, head, workspace.executionLevel());
-            audits.save(job.reviewRunId(), repositoryId, base, head, impact, coverage);
-            return Result.applied(impact, coverage, base.coverage(), head.coverage());
+            SemanticReusePlanner.Investigation reuse = reusePlanner.investigate(base, head, changedPaths);
+            audits.save(job.reviewRunId(), repositoryId, base, head, impact, coverage, reuse);
+            return Result.applied(impact, coverage, base.coverage(), head.coverage(), reuse);
         } catch (RuntimeException exception) {
             return Result.fallback("semantic_index_failed", "S1");
         }
@@ -160,17 +163,19 @@ public final class SemanticReviewService {
             Models.ImpactSummary impact,
             Models.Coverage coverage,
             SemanticModels.Coverage baseCoverage,
-            SemanticModels.Coverage headCoverage
+            SemanticModels.Coverage headCoverage,
+            SemanticReusePlanner.Investigation reuseInvestigation
     ) {
         private static Result notAttempted(String reason) {
-            return new Result(false, false, reason, "S0", null, null, null, null);
+            return new Result(false, false, reason, "S0", null, null, null, null, null);
         }
         private static Result fallback(String reason, String executionLevel) {
-            return new Result(true, false, reason, executionLevel, null, null, null, null);
+            return new Result(true, false, reason, executionLevel, null, null, null, null, null);
         }
         private static Result applied(Models.ImpactSummary impact, Models.Coverage coverage,
-                                      SemanticModels.Coverage base, SemanticModels.Coverage head) {
-            return new Result(true, true, "", coverage.executionLevel(), impact, coverage, base, head);
+                                      SemanticModels.Coverage base, SemanticModels.Coverage head,
+                                      SemanticReusePlanner.Investigation reuse) {
+            return new Result(true, true, "", coverage.executionLevel(), impact, coverage, base, head, reuse);
         }
     }
 }

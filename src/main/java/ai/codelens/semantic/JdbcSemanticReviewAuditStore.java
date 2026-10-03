@@ -25,9 +25,15 @@ public final class JdbcSemanticReviewAuditStore implements SemanticReviewAuditSt
 
     @Override
     public void save(String reviewRunId, long repositoryId, SemanticModels.Index base, SemanticModels.Index head,
-                     Models.ImpactSummary impact, Models.Coverage coverage) {
+                     Models.ImpactSummary impact, Models.Coverage coverage,
+                     SemanticReusePlanner.Investigation reuseInvestigation) {
         if (reviewRunId == null || reviewRunId.isBlank() || repositoryId <= 0
-                || !base.adapterVersion().equals(head.adapterVersion())) {
+                || !base.adapterVersion().equals(head.adapterVersion()) || reuseInvestigation == null
+                || !head.commitSha().equals(reuseInvestigation.provenance().headSha())
+                || !base.commitSha().equals(reuseInvestigation.provenance().baseSha())
+                || !head.adapterVersion().equals(reuseInvestigation.provenance().adapterVersion())
+                || !base.buildModelHash().equals(reuseInvestigation.provenance().baseBuildModelHash())
+                || !head.buildModelHash().equals(reuseInvestigation.provenance().headBuildModelHash())) {
             throw new IllegalArgumentException("Semantic review audit provenance is invalid");
         }
         transactions.executeWithoutResult(ignored -> {
@@ -36,8 +42,8 @@ public final class JdbcSemanticReviewAuditStore implements SemanticReviewAuditSt
             jdbc.update("""
                     INSERT INTO semantic_review_analyses (
                       review_run_id,base_snapshot_id,head_snapshot_id,adapter_version,
-                      analysis_level,execution_level,impact,coverage
-                    ) VALUES (?::uuid,?::uuid,?::uuid,?,?,?,?::jsonb,?::jsonb)
+                      analysis_level,execution_level,impact,coverage,reuse_investigation
+                    ) VALUES (?::uuid,?::uuid,?::uuid,?,?,?,?::jsonb,?::jsonb,?::jsonb)
                     ON CONFLICT (review_run_id) DO UPDATE SET
                       base_snapshot_id=EXCLUDED.base_snapshot_id,
                       head_snapshot_id=EXCLUDED.head_snapshot_id,
@@ -46,9 +52,11 @@ public final class JdbcSemanticReviewAuditStore implements SemanticReviewAuditSt
                       execution_level=EXCLUDED.execution_level,
                       impact=EXCLUDED.impact,
                       coverage=EXCLUDED.coverage,
+                      reuse_investigation=EXCLUDED.reuse_investigation,
                       updated_at=now()
                     """, reviewRunId, baseSnapshot, headSnapshot, head.adapterVersion(),
-                    coverage.analysisLevel(), coverage.executionLevel(), toJson(impact), toJson(coverage));
+                    coverage.analysisLevel(), coverage.executionLevel(), toJson(impact), toJson(coverage),
+                    toJson(reuseInvestigation));
         });
     }
 

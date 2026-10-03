@@ -45,6 +45,12 @@ class SemanticReviewServiceTest {
         assertTrue(result.impact().impactedSymbols() >= 2, () -> result.impact().toString());
         assertTrue(result.impact().topPaths().stream().anyMatch(path -> path.impactedName().contains("Caller")));
         assertTrue(result.impact().topPaths().stream().anyMatch(path -> path.impactedName().contains("TargetTest")));
+        assertEquals(HEAD, result.reuseInvestigation().provenance().headSha());
+        assertTrue(result.reuseInvestigation().searchScope().semanticCoverageComplete());
+        assertTrue(result.reuseInvestigation().candidates().stream()
+                .anyMatch(candidate -> candidate.relationship().equals("test_fixture")
+                        && candidate.qualifiedName().contains("TargetTest")));
+        assertFalse(result.reuseInvestigation().patchGate().allowed());
         try (var children = Files.list(workspaceRoot)) {
             assertEquals(0, children.count(), "ephemeral repository contents must be deleted after indexing");
         }
@@ -66,7 +72,7 @@ class SemanticReviewServiceTest {
                 new FileSemanticSnapshotStore(temporary.resolve("not-allowlisted-snapshots"),
                         new ObjectMapper().findAndRegisterModules()), new BuildModelDetector());
         SemanticReviewService notAllowlisted = new SemanticReviewService(true, java.util.Set.of(), workspace, indexes,
-                (reviewRunId, repositoryId, base, head, impact, coverage) -> { });
+                (reviewRunId, repositoryId, base, head, impact, coverage, reuse) -> { });
         assertFalse(notAllowlisted.analyze(99, job(), pull()).attempted());
         assertEquals(0, downloads.get());
 
@@ -84,7 +90,7 @@ class SemanticReviewServiceTest {
                 BASE, zip("owner-repo-base", repository("return 1;")),
                 HEAD, zip("owner-repo-head", repository("return 2;")));
         SemanticReviewService auditFailure = service(true, source(archives), temporary.resolve("audit-failure"),
-                (reviewRunId, repositoryId, base, head, impact, coverage) -> {
+                (reviewRunId, repositoryId, base, head, impact, coverage, reuse) -> {
                     throw new IllegalStateException("database unavailable");
                 });
         SemanticReviewService.Result auditFallback = auditFailure.analyze(99, job(), pull());
@@ -95,7 +101,7 @@ class SemanticReviewServiceTest {
 
     private SemanticReviewService service(boolean enabled, RepositoryArchiveSource source, Path workspaceRoot) {
         return service(enabled, source, workspaceRoot,
-                (reviewRunId, repositoryId, base, head, impact, coverage) -> { });
+                (reviewRunId, repositoryId, base, head, impact, coverage, reuse) -> { });
     }
 
     private SemanticReviewService service(boolean enabled, RepositoryArchiveSource source, Path workspaceRoot,

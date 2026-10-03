@@ -101,7 +101,7 @@ public class ReviewEngine {
         if (!github.currentHead(job.installationId(), job.owner(), job.repo(), job.pullNumber()).equals(job.headSha())) {
             stale(job, run.id(), checkId, "A newer PR head SHA arrived before publishing; no outdated result was posted."); return;
         }
-        String markdown = renderMarkdown(summary);
+        String markdown = renderMarkdown(summary, semantic);
         List<Models.Annotation> annotations = findings.stream().filter(Models.Finding::publishable).limit(config.maxInlineComments())
                 .map(item -> new Models.Annotation(item.path(), item.line(), item.line(),
                         Set.of("critical", "high").contains(item.severity()) ? "failure" : item.severity().equals("medium") ? "warning" : "notice",
@@ -180,6 +180,10 @@ public class ReviewEngine {
     }
 
     public static String renderMarkdown(Models.ChangeSummary summary) {
+        return renderMarkdown(summary, null);
+    }
+
+    static String renderMarkdown(Models.ChangeSummary summary, SemanticReviewService.Result semantic) {
         StringBuilder out = new StringBuilder("## CodeLens AI Review\n\n**Risk: ").append(summary.riskLevel().toUpperCase()).append("**\n\n")
                 .append(summary.overview()).append("\n\n### Change intent\n\n").append(summary.intent()).append("\n\n### Files\n\n");
         summary.files().forEach(file -> out.append("- `").append(file.path()).append("` — ").append(file.change()).append('\n'));
@@ -204,12 +208,40 @@ public class ReviewEngine {
         if (summary.policy() != null) out.append("\n### Repository policy\n\n- Rules: ").append(summary.policy().rules()).append("; included files: ")
                 .append(summary.policy().includedFiles()).append("; excluded files: ").append(summary.policy().excludedFiles())
                 .append("; blocking: ").append(summary.policy().blocking()).append("; language: ").append(summary.policy().language()).append('\n');
+        if (semantic != null && semantic.applied() && semantic.reuseInvestigation() != null) {
+            var reuse = semantic.reuseInvestigation();
+            out.append("\n### Reuse investigation\n\n- Production Java graph at `")
+                    .append(shortSha(reuse.provenance().headSha())).append("` searched ")
+                    .append(reuse.searchScope().searchedSymbols()).append(" unchanged symbol(s) and ")
+                    .append(reuse.searchScope().searchedRelationships()).append(" relationship(s).\n")
+                    .append("- Semantic coverage for a `new` decision: **")
+                    .append(reuse.searchScope().semanticCoverageComplete() ? "complete" : "incomplete").append("**.\n");
+            if (reuse.candidates().isEmpty()) {
+                out.append("- No candidate met the current deterministic recall signals; this is not proof that no reusable implementation exists.\n");
+            } else {
+                reuse.candidates().stream().limit(3).forEach(candidate -> out.append("- `")
+                        .append(markdownCode(candidate.qualifiedName())).append("` in `")
+                        .append(markdownCode(candidate.path())).append("` — ")
+                        .append(candidate.relationship()).append(", ")
+                        .append(candidate.fit()).append(", score ")
+                        .append("%.2f".formatted(candidate.score())).append(".\n"));
+            }
+            out.append("- Patch publication: **blocked** until an audited ReuseDecision, selected SolutionOption, local diff, and verification plan pass the release gate.\n");
+        }
         out.append("\n### Coverage and limitations\n\n- Analysis level: **").append(summary.coverage().analysisLevel()).append("**")
                 .append("; execution level: **").append(summary.coverage().executionLevel()).append("**\n")
                 .append("- Files reviewed: ").append(summary.coverage().reviewedFiles()).append('/').append(summary.coverage().totalFiles())
                 .append(summary.coverage().truncated() ? " (truncated)" : "").append("\n");
         summary.coverage().limitations().forEach(limitation -> out.append("- Limitation: ").append(limitation).append('\n'));
         return out.toString();
+    }
+
+    private static String shortSha(String value) {
+        return value == null ? "unknown" : value.substring(0, Math.min(12, value.length()));
+    }
+
+    private static String markdownCode(String value) {
+        return value == null ? "unknown" : value.replace('`', '\'').replace('\r', ' ').replace('\n', ' ');
     }
 
     private static List<DiffLine> addedLines(List<Models.ChangedFile> files) {

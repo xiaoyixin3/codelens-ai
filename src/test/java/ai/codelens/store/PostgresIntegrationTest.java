@@ -7,6 +7,7 @@ import ai.codelens.semantic.JdbcSemanticSnapshotStore;
 import ai.codelens.migration.MigrationSchemaVerifier;
 import ai.codelens.semantic.JdbcSemanticReviewAuditStore;
 import ai.codelens.semantic.SemanticModels;
+import ai.codelens.semantic.SemanticReusePlanner;
 import ai.codelens.semantic.SemanticSnapshotStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zaxxer.hikari.HikariConfig;
@@ -78,10 +79,15 @@ class PostgresIntegrationTest {
             assertEquals(semanticIndex, semantic.load(semanticKey).orElseThrow());
             Models.ImpactSummary semanticImpact = new Models.ImpactSummary("low", 10, 1, 1, List.of(), "integration");
             Models.Coverage semanticCoverage = new Models.Coverage(1, 1, false, "semantic", "S1", List.of());
+            SemanticReusePlanner.Investigation reuse = new SemanticReusePlanner().investigate(
+                    semanticIndex, semanticIndex, java.util.Set.of(symbol.path()));
             new JdbcSemanticReviewAuditStore(jdbc, dataSource, json).save(
-                    runId, repository, semanticIndex, semanticIndex, semanticImpact, semanticCoverage);
+                    runId, repository, semanticIndex, semanticIndex, semanticImpact, semanticCoverage, reuse);
             assertEquals(1, jdbc.queryForObject(
                     "SELECT count(*) FROM semantic_review_analyses WHERE review_run_id=?::uuid", Integer.class, runId));
+            assertEquals(semanticKey.commitSha(), jdbc.queryForObject(
+                    "SELECT reuse_investigation #>> '{provenance,headSha}' FROM semantic_review_analyses WHERE review_run_id=?::uuid",
+                    String.class, runId));
 
             providers.delete(installation, providerId, "integration-test"); assertTrue(providers.list(installation).isEmpty());
         } finally {
