@@ -2,7 +2,7 @@
 
 双击桌面的 `CodeLens-Local.cmd`，等待就绪后会打开浏览器 http://127.0.0.1:4310 。也可在项目根目录运行 `npm run review:local`。首次启动的终端保持打开；Ctrl+C 停止。再次双击会复用已运行入口，不再重复占用端口。启动器使用 Node，不修改 PowerShell 执行策略。
 
-要求：Java 17+、Node 24+、Git；首次安装执行 `npm ci`，首次构建需要 Maven（可用 `CODELENS_MAVEN` 指定 mvn.cmd）。已有构建且源码未变化时直接启动。不需要 GitHub App、ngrok、Docker、数据库、API 密钥或人工标注。
+要求：Java 17+、Node 24+、Git；本地试用首次安装执行 `npm ci --omit=dev --ignore-scripts`，首次源码构建需要 Maven（可用 `CODELENS_MAVEN` 指定 mvn.cmd）。下载预览包已有构建且源码未变化时直接启动。不需要 GitHub App、ngrok、Docker、数据库、API 密钥或人工标注。仅安装运行依赖时不能运行开发测试；开发工具告警见 [预览发布边界](local-preview-release.md)。
 
 在页面填写本地 Git 仓库绝对路径，Base 默认 `HEAD^`、Head 默认 `HEAD`。也可填写两次提交 SHA、分支或标签。只有一次提交的仓库必须先准备可比较的第二次提交。未提交修改不会包含在内，页面会提示；程序不修改或丢弃工作区文件。
 
