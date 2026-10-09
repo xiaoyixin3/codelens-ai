@@ -4,6 +4,10 @@ Status: in progress
 Baseline: [`technical-baseline-v2.md`](technical-baseline-v2.md)  
 Decision record: [`adr/0007-phase-0-1-baseline.md`](adr/0007-phase-0-1-baseline.md)
 
+2026-10-03 supplement: [`desktop-proposal-alignment-2026-10-03.md`](desktop-proposal-alignment-2026-10-03.md)
+records the user-supplied reliability proposal, source-verified gaps, and ordered
+production hardening work without changing the baseline exit gates.
+
 ## Guardrails
 
 - Do not add languages or shallow detector rules.
@@ -147,3 +151,45 @@ This iteration may claim “foundation implemented” only when:
   tests pass;
 - the fallback path remains distinguishable in output;
 - the evidence report lists every unmet product exit criterion explicitly.
+
+## 2026-10-04 automated engineering increment (not phase acceptance)
+
+The Java.16 candidate adds deterministic single-block final-request context metadata,
+explicit omissions, and persistent per-physical-send byte/call reservations. Restarts,
+unknown outcomes and telemetry retention do not restore budget; model HTTP is outside
+short database transactions. Existing Java indexing and review logic are reused.
+See [context/budget evidence](evidence/model-context-budget-2026-10-04.md).
+
+This increment needs no specialist labelling or paid model calls and does not touch
+the sealed independent semantic corpus. Multi-block result persistence/resumption,
+local patch preview and sandbox verification remain separate engineering work.
+Phase 0/1 independent quality and actual review-time gates remain open; this is not
+an advancement to a later accepted product phase. Live local trial remains Java.13;
+the new source needs migrations 001–022 and has not been deployed to the live database.
+
+## 2026-10-05 automated engineering increment (not phase acceptance)
+
+Added a production Java read-only local preview backend after option approval,
+bound to indexed Head source hashes and approved actual semantic symbols.
+This renders and checks supplied line edits, not automatic repair synthesis.
+No candidate-use, compile/test or behavioral verification, worker patch publishing,
+assisted UI integration or remote current PR check is claimed. Publication and
+application remain disabled. See [preview evidence](evidence/r3-local-patch-preview-2026-10-05.md).
+
+This needs no owner specialist labeling, paid model or execution of reviewed code.
+Sandbox verification, multi-block result persistence and all Phase 0/1 quality/time
+exit evidence remain open. Candidate version/schema and live trial image are unchanged.
+
+## 2026-10-05 internal execution prototype (not S2 activation)
+
+A separate standard-library Java container probe now reuses approved preview
+material and records bounded source/test/hash plans before running fixed baseline,
+Head-regression and patched-regression steps. Synthetic real containers validate
+success, no reproduction, compile failure, remaining failure, timeout and isolation.
+See [execution evidence](evidence/java-sandbox-prototype-2026-10-05.md).
+
+This has no API/Worker route or permission to execute real PRs. It is not the
+Maven/Gradle/JUnit adapter, production audit/budget or crash-independent execution
+supervisor required for S2 acceptance. All verified-fix/apply/publish flags stay
+false. Phase 0/1 independent quality/time and later sandbox/patch exit gates are
+unchanged; synthetic before-fail/after-pass is engineering evidence, not acceptance.

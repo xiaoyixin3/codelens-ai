@@ -1,6 +1,8 @@
 package ai.codelens.semantic;
 
 import ai.codelens.contracts.Models;
+import ai.codelens.review.ReviewExecutionGuard;
+import ai.codelens.store.LeaseLostException;
 import ai.codelens.workspace.GitHubRepositoryWorkspace;
 import ai.codelens.workspace.RepositoryWorkspace;
 
@@ -43,7 +45,8 @@ public final class SemanticReviewService {
         this.reusePlanner = new SemanticReusePlanner();
     }
 
-    public Result analyze(long repositoryId, Models.ReviewJob job, Models.PullRequest pull) {
+    public Result analyze(long repositoryId, Models.ReviewJob job, Models.PullRequest pull, ReviewExecutionGuard guard) {
+        guard.check();
         String repository = (job.owner() + "/" + job.repo()).toLowerCase(java.util.Locale.ROOT);
         if (!enabled || !enabledRepositories.contains(repository)) return Result.notAttempted("semantic_disabled");
         if (!relevantChange(pull.files())) return Result.notAttempted("no_java_or_build_change");
@@ -54,9 +57,11 @@ public final class SemanticReviewService {
             return Result.fallback("semantic_materialization_failed", "S0");
         }
         try (RepositoryWorkspace.MaterializedWorkspace workspace = materialized) {
+            guard.check();
             String repositoryKey = Long.toString(repositoryId);
             Set<String> changedPaths = changedPaths(pull.files());
             SemanticModels.Index base = indexes.base(repositoryKey, workspace.base(), pull.baseSha());
+            guard.check();
             SemanticModels.Index head = indexes.head(repositoryKey, workspace.head(), pull.headSha(), base, changedPaths);
             if (base.coverage().indexedFiles() == 0 || head.coverage().indexedFiles() == 0) {
                 return Result.fallback("semantic_no_indexed_files", workspace.executionLevel());
@@ -64,8 +69,9 @@ public final class SemanticReviewService {
             Models.ImpactSummary impact = impact(base, head, changedPaths);
             Models.Coverage coverage = coverage(base, head, workspace.executionLevel());
             SemanticReusePlanner.Investigation reuse = reusePlanner.investigate(base, head, changedPaths);
-            audits.save(job.reviewRunId(), repositoryId, base, head, impact, coverage, reuse);
+            guard.write(() -> audits.save(job.reviewRunId(), repositoryId, base, head, impact, coverage, reuse));
             return Result.applied(impact, coverage, base.coverage(), head.coverage(), reuse);
+        } catch (LeaseLostException exception) { throw exception;
         } catch (RuntimeException exception) {
             return Result.fallback("semantic_index_failed", "S1");
         }

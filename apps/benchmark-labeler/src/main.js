@@ -17,7 +17,7 @@ const emptyDraft = () => ({
 const model = {
   state: null, activeId: '', activeFile: '', activeContextKey: '', view: 'overview', filter: 'all', query: '',
   rootCauses: [], draft: emptyDraft(), notes: '', reviewer: localStorage.getItem('codelens-reviewer') ?? '',
-  message: '', saving: false, solutionOptions: {}
+  message: '', saving: false, solutionOptions: {}, localInput: { repository: '', base: 'HEAD^', head: 'HEAD' }, localLoading: false, localError: ''
 };
 
 const escapeHtml = (value = '') => String(value)
@@ -73,6 +73,7 @@ function renderSource(file, selectedEvidence) {
 }
 
 function sidebarHtml(current) {
+  if (model.state.localMode) return `<aside class="sidebar"><div class="brand"><span class="brand-mark">CL</span>CodeLens 本地版</div><div class="sidebar-kicker">JAVA · LOCAL REVIEW</div><div class="progress-card"><strong>先理解，再修改</strong><p>总览 → 行为变化 → 调用方与测试 → 复用方案</p><small>无需 GitHub App、数据库或人工标注。</small></div><div class="case-list">${current ? `<button class="case-card active"><span></span><span class="case-copy"><small>${escapeHtml(current.repo)}</small><strong>${escapeHtml(current.title)}</strong><em>只读 · 已提交版本</em></span></button>` : '<div class="empty-list">填写本地 Git 仓库开始</div>'}</div><div class="sidebar-footer">仅本机访问 · 不自动改代码</div></aside>`;
   const summary = model.state.summary; const reviewed = summary.frozen + summary.deferred;
   const progress = summary.total ? Math.round(reviewed / summary.total * 100) : 0;
   const filters = [['all', '全部', summary.total, '≡'], ['pending', '待判断', summary.pending, '○'], ['frozen', '已冻结', summary.frozen, '✓'], ['deferred', '暂缓', summary.deferred, 'Ⅱ']];
@@ -121,7 +122,7 @@ function overviewPanelHtml(current) {
   const ready = current.contextPacket.available;
   return `<div class="overview-scroll"><section class="merge-verdict ${ready ? 'ready' : 'limited'}"><div><span>${ready ? 'READY FOR STRUCTURED REVIEW' : 'CONTEXT LIMITED'}</span><h3>${ready ? '上下文已冻结，可以按行为开始审阅' : '只能查看 Diff；正式金标应暂缓'}</h3></div><b>${coverage.level === 'semantic' ? 'SEMANTIC' : 'DIFF-ONLY'}</b></section>
     <section class="brief-section"><div class="brief-heading"><div><span class="eyebrow">WHAT IS THIS CHANGE?</span><h3>意图与证据</h3></div><small>每句话必须可追溯或标记未知</small></div>${statementHtml(current, brief.intent)}</section>
-    <section class="coverage-strip"><div><strong>${coverage.changedFiles}</strong><span>变更文件</span></div><div><strong>${coverage.contextualFiles}</strong><span>上下文文件</span></div><div><strong>${coverage.indexedSymbols}</strong><span>索引符号</span></div><div><strong>${coverage.relationships}</strong><span>调用关系</span></div></section>
+    <section class="coverage-strip"><div><strong>${coverage.changedFiles}</strong><span>变更文件</span></div><div><strong>${coverage.contextualFiles}</strong><span>上下文文件</span></div><div><strong>${coverage.indexedSymbols}</strong><span>索引符号</span></div><div><strong>${coverage.relationships}</strong><span>语义关系</span></div></section>
     <section class="brief-section"><div class="brief-heading"><div><span class="eyebrow">REVIEW LAYERS</span><h3>按行为组织的变更地图</h3></div><button data-view="behavior">查看全部行为卡 →</button></div><div class="behavior-preview">${brief.behaviorCards.map((card, index) => `<button data-open-behavior="${index}"><span>0${index + 1}</span><div><strong>${escapeHtml(card.title)}</strong><small>${escapeHtml(card.summary.text)}</small><em>${card.unchangedCallers.length} 调用方 · ${card.relatedTests.length} 测试</em></div></button>`).join('')}</div></section>
     <section class="brief-section attention"><div class="brief-heading"><div><span class="eyebrow">CHECK FIRST</span><h3>先回答这些中立问题</h3></div><small>不是机器结论</small></div><div class="question-list">${brief.questions.map((question, index) => questionHtml(current, question, index)).join('')}</div></section>
     ${coverage.limitations.length ? `<section class="coverage-limitations"><strong>覆盖限制</strong>${coverage.limitations.map((item) => `<p>• ${escapeHtml(item)}</p>`).join('')}</section>` : ''}</div>`;
@@ -177,12 +178,46 @@ function decisionHtml(current) {
     <section class="blind-section"><div class="section-heading"><h3>${frozen ? '冻结的根因标签' : '你确认的根因'}</h3><span>${model.rootCauses.length} 条</span></div><div class="human-list">${model.rootCauses.length ? model.rootCauses.map((item, index) => rootCauseHtml(item, index, frozen)).join('') : '<div class="empty-human">尚未形成完整根因。证据不足时请暂缓，不要猜测。</div>'}</div></section>${frozen ? '' : draftFormHtml()}${assistanceHtml(current)}`;
 }
 function workspaceHtml(current) {
+  if (model.state.localMode) return localWorkspaceHtml(current);
   if (!current) return '<main class="loading">没有可审阅的条目</main>';
   const frozen = tone(current) === 'frozen'; const summary = model.state.summary;
   return `<main class="workspace"><header class="topbar"><div><span class="eyebrow">${escapeHtml(model.state.mode.toUpperCase())} · ROOT CAUSE REVIEW</span><h1>${escapeHtml(current.owner)}/${escapeHtml(current.repo)} <b>#${current.number}</b></h1></div><div class="top-actions"><label>审阅人<input id="reviewer" value="${escapeHtml(model.reviewer)}" placeholder="姓名或代号" /></label><button id="export" class="export" ${summary.frozen !== summary.total || model.saving ? 'disabled' : ''}>⇧ 导出冻结标签</button></div></header>
     <section class="review-grid"><div class="diff-panel"><div class="pr-heading"><div><h2>${escapeHtml(current.title)}</h2><p>${escapeHtml(current.body || '该 PR 没有描述。')}</p></div><a href="${escapeHtml(current.sourceUrl)}" target="_blank" rel="noreferrer">在 GitHub 打开 ↗</a></div><div class="workspace-tabs"><button data-view="overview" class="${model.view === 'overview' ? 'active' : ''}">总览</button><button data-view="behavior" class="${model.view === 'behavior' ? 'active' : ''}">行为层 ${current.changeBrief.behaviorCards.length}</button>${current.reuseInvestigations ? `<button data-view="reuse" class="${model.view === 'reuse' ? 'active' : ''}">复用调查 ${current.reuseInvestigations.reduce((sum, item) => sum + item.candidates.length, 0)}</button>` : ''}<button data-view="change" class="${model.view === 'change' ? 'active' : ''}">Diff 证据</button><button data-view="context" class="${model.view === 'context' ? 'active' : ''}">Base / Head / 关系 ${current.contextPacket.available ? '✓' : '!'}</button></div>${model.view === 'overview' ? overviewPanelHtml(current) : model.view === 'behavior' ? behaviorPanelHtml(current) : model.view === 'reuse' ? reusePanelHtml(current) : model.view === 'change' ? changePanelHtml(current) : contextPanelHtml(current)}</div>
     <aside class="decision-panel"><div class="decision-scroll"><div class="decision-title"><div><span class="eyebrow">ROOT CAUSE CONTRACT</span><h2>${frozen ? '查看冻结结果' : '记录可验证根因'}</h2></div><span class="status-pill ${tone(current)}">${frozen ? '已冻结' : tone(current) === 'deferred' ? '暂缓' : '待判断'}</span></div>${decisionHtml(current)}<label class="notes">审阅备注（可选）<textarea id="notes" ${frozen ? 'disabled' : ''} placeholder="记录判断依据或不确定点…">${escapeHtml(model.notes)}</textarea></label>${model.message ? `<div class="message">${escapeHtml(model.message)}</div>` : ''}</div>
     <div class="decision-actions">${frozen ? '' : `<button id="defer" class="secondary" ${model.saving ? 'disabled' : ''}>Ⅱ 暂缓</button><button id="clean" class="clean" ${model.saving || (model.state.mode === 'gold' && !current.contextPacket.available) ? 'disabled' : ''}>⊘ 冻结为无根因</button><button id="freeze" class="primary" ${model.saving || !model.rootCauses.length || (model.state.mode === 'gold' && !current.contextPacket.available) ? 'disabled' : ''}>✓ 冻结 ${model.rootCauses.length} 条根因</button>`}</div><div class="case-nav"><button id="previous">← 上一条</button><span>${model.state.cases.indexOf(current) + 1} / ${summary.total}</span><button id="next">下一条 →</button></div></aside></section></main>`;
+}
+
+function localEntryHtml() {
+  const input = model.localInput;
+  return `<section class="local-entry"><div><strong>本地 Java 代码审查</strong><small>读取两次 Git 提交，帮助理解变更和选择最小修改方案。</small></div><form id="local-review-form"><label class="repo-input">Git 仓库路径<input id="local-repository" required value="${escapeHtml(input.repository)}" placeholder="C:\\项目\\my-java-project" /></label><label>Base<input id="local-base" required value="${escapeHtml(input.base)}" /></label><label>Head<input id="local-head" required value="${escapeHtml(input.head)}" /></label><button class="primary" ${model.localLoading ? 'disabled' : ''}>${model.localLoading ? '正在索引 Java…' : '开始审查'}</button></form><p role="status">${escapeHtml(model.localError || (model.localLoading ? '正在冻结提交、索引 Java 和计算上下文，请稍候（最多 2 分钟）。' : '默认比较最近一次提交。未提交修改不包含在内；不会上传代码、执行构建或写回仓库。'))}</p></section>`;
+}
+
+function localWorkspaceHtml(current) {
+  if (!current) return '<main class="loading">填写仓库路径后点击“开始审查”。无需先做人工标注。</main>';
+  const views = [['overview', '总览'], ['behavior', '行为变化'], ['reuse', '复用与方案'], ['change', 'Diff 证据'], ['context', 'Base / Head / 关系']];
+  const panel = model.view === 'overview' ? overviewPanelHtml(current) : model.view === 'behavior' ? behaviorPanelHtml(current) : model.view === 'reuse' ? reusePanelHtml(current) : model.view === 'change' ? changePanelHtml(current) : contextPanelHtml(current);
+  return `<main class="workspace"><header class="topbar"><div><span class="eyebrow">READ ONLY · JAVA SEMANTIC INDEX</span><h1>${escapeHtml(current.repo)} <b>本地审查</b></h1></div><button id="local-download" class="export">下载本地报告</button></header><section class="review-grid"><div class="diff-panel"><div class="pr-heading"><div><h2>${escapeHtml(current.title)}</h2><p>${escapeHtml(current.body)}</p></div></div><div class="workspace-tabs">${views.map(([view, title]) => `<button data-view="${view}" class="${model.view === view ? 'active' : ''}">${title}</button>`).join('')}</div>${panel}</div><aside class="decision-panel"><div class="decision-scroll"><h2>阅读与修改引导</h2><div class="guardrail"><p><strong>辅助理解，不需要标注</strong><br />索引和方案是阅读线索，不是缺陷或修复正确性的证明。</p></div>${model.state.localDirty ? '<div class="message">仓库有未提交修改；本次只分析所选提交，不会改动工作区。</div>' : ''}<section class="blind-section"><h3>建议按这个顺序看</h3><p>1. 总览：确认这次改变了什么。</p><p>2. 行为变化：比较旧行为与新行为。</p><p>3. 上下文：查看调用方、原有实现和测试。</p><p>4. 复用与方案：选择已有候选，生成修改范围与验证步骤。</p></section><h3>覆盖与限制</h3>${current.contextPacket.limitations.map(value => `<p>${escapeHtml(value)}</p>`).join('')}${model.message ? `<div class="message" role="status">${escapeHtml(model.message)}</div>` : ''}<div class="guardrail"><p>自动改代码、GitHub 发布和“已验证修复”均关闭。没有候选或没有问题提示不等于安全。</p></div></div></aside></section></main>`;
+}
+
+async function runLocalReview(event) {
+  event.preventDefault();
+  model.localInput = { repository: document.querySelector('#local-repository').value.trim(), base: document.querySelector('#local-base').value.trim(), head: document.querySelector('#local-head').value.trim() };
+  model.localLoading = true; model.localError = ''; render();
+  try {
+    const response = await fetch('/api/local/review', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(model.localInput) });
+    const result = await response.json(); if (!response.ok) throw new Error(result.error || '分析失败');
+    await loadState(result.id); model.solutionOptions = {}; selectCase(result.id);
+  } catch (error) { model.localError = error instanceof Error ? error.message : String(error); }
+  finally { model.localLoading = false; render(); }
+}
+
+function downloadLocalReport() {
+  const current = currentCase();
+  const report = { format: 'codelens-local-review-v1', localOnly: true, verifiedFix: false, generatedAt: new Date().toISOString(),
+    baseSha: current.baseSha, headSha: current.headSha, changeBrief: current.changeBrief,
+    reuseInvestigations: current.reuseInvestigations, solutionOptions: model.solutionOptions, limitations: current.contextPacket.limitations };
+  const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' }));
+  const link = document.createElement('a'); link.href = url; link.download = `${current.id}-report.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function syncDraft() {
@@ -238,6 +273,9 @@ function openBriefEvidence(evidenceId) {
 }
 
 function bindEvents() {
+  document.querySelector('#local-review-form')?.addEventListener('submit', runLocalReview);
+  document.querySelector('#local-download')?.addEventListener('click', downloadLocalReport);
+  for (const [id, key] of [['local-repository', 'repository'], ['local-base', 'base'], ['local-head', 'head']]) document.querySelector(`#${id}`)?.addEventListener('input', event => { model.localInput[key] = event.target.value; });
   document.querySelectorAll('[data-filter]').forEach((button) => button.addEventListener('click', () => { model.filter = button.dataset.filter; render(); }));
   document.querySelectorAll('[data-case]').forEach((button) => button.addEventListener('click', () => selectCase(button.dataset.case)));
   document.querySelectorAll('[data-view]').forEach((button) => button.addEventListener('click', () => { syncDraft(); model.view = button.dataset.view; render(); }));
@@ -269,7 +307,8 @@ function bindEvents() {
 }
 function render() {
   if (!model.state) { root.innerHTML = '<main class="loading">✦ 正在准备根因审阅队列…</main>'; return; }
-  const current = currentCase(); root.innerHTML = `<div class="shell">${sidebarHtml(current)}${workspaceHtml(current)}</div>`; bindEvents();
+  const current = currentCase(); document.body.classList.toggle('local-mode', Boolean(model.state.localMode));
+  root.innerHTML = `${model.state.localMode ? localEntryHtml() : ''}<div class="shell">${sidebarHtml(current)}${workspaceHtml(current)}</div>`; bindEvents();
 }
 async function loadState(preferId) {
   const response = await fetch('/api/state'); if (!response.ok) throw new Error('无法加载审阅队列');

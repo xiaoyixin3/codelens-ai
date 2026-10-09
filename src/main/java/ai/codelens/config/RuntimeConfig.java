@@ -104,15 +104,48 @@ public record RuntimeConfig(
 
     public boolean production() { return environment.equals("production"); }
 
+    public boolean publicTrial() { return Boolean.parseBoolean(env("CODELENS_PUBLIC_TRIAL", "false")); }
+
+    public boolean frozenPublicationsEnabled() { return Boolean.parseBoolean(env("CODELENS_FREEZE_PUBLICATIONS", "false")); }
+    public String publicationKey() { return env("CODELENS_PUBLICATION_KEY", ""); }
+
+    static void validateFrozenPublications(String enabled, String key) {
+        if (!Set.of("true", "false").contains(enabled.toLowerCase(Locale.ROOT))) {
+            throw new IllegalArgumentException("CODELENS_FREEZE_PUBLICATIONS must be true or false");
+        }
+        if (Boolean.parseBoolean(enabled)) new ai.codelens.credentials.CredentialVault(key);
+    }
+
+    public boolean permitsTrialRepository(String owner, String repo) {
+        return trialRepositoryAllowed(publicTrial(), csvSet(env("CODELENS_PUBLIC_TRIAL_REPOSITORIES", "")), owner, repo);
+    }
+
+    static boolean trialRepositoryAllowed(boolean enabled, Set<String> repositories, String owner, String repo) {
+        return !enabled || repositories.contains((owner + "/" + repo).toLowerCase(Locale.ROOT));
+    }
+
+    static void validatePublicTrial(String enabled, String repositories) {
+        if (!Set.of("true", "false").contains(enabled.toLowerCase(Locale.ROOT))) {
+            throw new IllegalArgumentException("CODELENS_PUBLIC_TRIAL must be true or false");
+        }
+        if (Boolean.parseBoolean(enabled) && (csvSet(repositories).isEmpty()
+                || csvSet(repositories).stream().anyMatch(value -> !value.matches("[a-z0-9_.-]+/[a-z0-9_.-]+")))) {
+            throw new IllegalArgumentException("public trial requires explicit owner/repository entries");
+        }
+    }
+
     public void validate() {
+        validateFrozenPublications(env("CODELENS_FREEZE_PUBLICATIONS", "false"), publicationKey());
+        validatePublicTrial(env("CODELENS_PUBLIC_TRIAL", "false"), env("CODELENS_PUBLIC_TRIAL_REPOSITORIES", ""));
         if (!Set.of("development", "test", "production").contains(environment)) {
             throw new IllegalArgumentException("CODELENS_ENVIRONMENT must be development, test, or production");
         }
-        if (!Set.of("api", "worker", "migrate").contains(mode.trim().toLowerCase(Locale.ROOT))) {
-            throw new IllegalArgumentException("CODELENS_MODE must be api, worker, or migrate");
+        if (!Set.of("api", "worker", "migrate", "publication-inspect").contains(mode.trim().toLowerCase(Locale.ROOT))) {
+            throw new IllegalArgumentException("CODELENS_MODE must be api, worker, migrate, or publication-inspect");
         }
         if (webhookSecret.length() < 16) throw new IllegalArgumentException("GITHUB_WEBHOOK_SECRET must contain at least 16 characters");
         if (maxChangedFiles < 1 || maxPatchChars < 1 || maxInlineComments < 0 || maxIndexFileBytes < 1 || workerConcurrency < 1
+                || llmMaxCalls < 1 || llmMaxInputChars < 1
                 || semanticWorkspaceRoot.isBlank() || semanticMaxArchiveBytes < 1 || semanticMaxExtractedBytes < 1
                 || semanticMaxEntries < 1 || semanticMaxFiles < 1 || semanticMaxFileBytes < 1
                 || semanticMaxDependencyJars < 1 || semanticMaxDependencyJarBytes < 1) {
@@ -145,13 +178,13 @@ public record RuntimeConfig(
                 || webhookSecret.equals("development-webhook-secret") || webhookSecret.contains("replace-with"))) {
             throw new IllegalArgumentException("production API requires a high-entropy GITHUB_WEBHOOK_SECRET of at least 32 characters");
         }
-        if (normalizedMode.equals("worker")) {
+        if (Set.of("worker", "publication-inspect").contains(normalizedMode)) {
             if (!githubAppId.matches("[1-9][0-9]*")) {
-                throw new IllegalArgumentException("production worker requires a numeric GITHUB_APP_ID");
+                throw new IllegalArgumentException("production worker/inspection requires a numeric GITHUB_APP_ID");
             }
             if (!githubPrivateKey.startsWith("-----BEGIN ") || !githubPrivateKey.contains("PRIVATE KEY-----")
                     || !githubPrivateKey.contains("-----END ")) {
-                throw new IllegalArgumentException("production worker requires a PEM GITHUB_PRIVATE_KEY");
+                throw new IllegalArgumentException("production worker/inspection requires a PEM GITHUB_PRIVATE_KEY");
             }
         }
         if (!semanticDependencyCache.isBlank() && !java.nio.file.Path.of(semanticDependencyCache).isAbsolute()) {

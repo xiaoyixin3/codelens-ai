@@ -3,6 +3,7 @@ package ai.codelens.store;
 import ai.codelens.config.DotEnv;
 import ai.codelens.config.RuntimeConfig;
 import ai.codelens.contracts.Models;
+import ai.codelens.intelligence.CodeIntelligenceService;
 import ai.codelens.semantic.JdbcSemanticSnapshotStore;
 import ai.codelens.migration.MigrationSchemaVerifier;
 import ai.codelens.semantic.JdbcSemanticReviewAuditStore;
@@ -54,7 +55,37 @@ class PostgresIntegrationTest {
             JdbcStore.CreatedRun created = reviews.createOrGetAndEnqueue(input, pending); runId = created.run().id();
             assertTrue(created.created()); assertFalse(reviews.createOrGetAndEnqueue(input, pending).created());
             Models.ClaimedJob claimed = reviews.claimJob().orElseThrow();
-            assertEquals(runId, claimed.payload().reviewRunId()); reviews.completeJob(claimed.id());
+            assertEquals(runId, claimed.payload().reviewRunId()); reviews.completeJob(claimed);
+
+            reviews.updateReviewRunConfig(runId, "resolved-policy-v2");
+            // Real PostgreSQL must accept the update-style upsert without RETURNING.
+            // Repeated saves reuse the analysis row and the existing snapshots.
+            var baseSnapshot = new CodeIntelligenceService.Snapshot(UUID.randomUUID().toString(),
+                    "base1234", "base1234", "a".repeat(64), List.of(), List.of(), List.of());
+            var headSnapshot = new CodeIntelligenceService.Snapshot(UUID.randomUUID().toString(),
+                    "head1234", "base1234", "a".repeat(64), List.of(), List.of(), List.of());
+            var analysis = new CodeIntelligenceService.Result(baseSnapshot, headSnapshot, List.of(), List.of(),
+                    new Models.ImpactSummary("low", 0, 0, 0, List.of(), "fixture coverage"));
+            reviews.saveIntelligence(runId, repository, "base1234", analysis);
+            String savedAnalysisId = jdbc.queryForObject("SELECT id::text FROM impact_analyses WHERE review_run_id=?::uuid", String.class, runId);
+            reviews.saveIntelligence(runId, repository, "base1234", analysis);
+            assertEquals(savedAnalysisId, jdbc.queryForObject("SELECT id::text FROM impact_analyses WHERE review_run_id=?::uuid", String.class, runId));
+            assertEquals(1, jdbc.queryForObject("SELECT count(*) FROM impact_analyses WHERE review_run_id=?::uuid", Integer.class, runId));
+            assertEquals(2, jdbc.queryForObject("SELECT count(*) FROM code_snapshots WHERE github_repository_id=?", Integer.class, repository));
+            assertEquals(runId, reviews.createOrGetAndEnqueue(input, pending).run().id());
+            assertEquals(Models.DEFAULT_CONFIG_HASH, jdbc.queryForObject(
+                    "SELECT enqueue_config_hash FROM review_runs WHERE id=?::uuid", String.class, runId));
+            JdbcStore.CreateReviewInput baseChanged = new JdbcStore.CreateReviewInput(repository, 7, "base5678", "head1234",
+                    Models.PIPELINE_VERSION, Models.DEFAULT_CONFIG_HASH, "webhook", "integration");
+            Models.ReviewJob baseJob = new Models.ReviewJob("pending", installation, "integration", "fixture", 7, "base5678", "head1234");
+            assertThrows(IllegalArgumentException.class, () -> reviews.createOrGetAndEnqueue(baseChanged, pending));
+            JdbcStore.CreatedRun baseRun = reviews.createOrGetAndEnqueue(baseChanged, baseJob);
+            assertTrue(baseRun.created());
+            assertFalse(reviews.createOrGetAndEnqueue(baseChanged, baseJob).created());
+            JdbcStore.CreateReviewInput configChanged = new JdbcStore.CreateReviewInput(repository, 7, "base1234", "head1234",
+                    Models.PIPELINE_VERSION, "enqueue-v2", "webhook", "integration");
+            assertTrue(reviews.createOrGetAndEnqueue(configChanged, pending).created());
+            assertEquals(3, jdbc.queryForObject("SELECT count(*) FROM review_runs WHERE github_repository_id=?", Integer.class, repository));
 
             ProviderStore.ProviderConnection provider = providers.create(new ProviderStore.CreateInput(providerId, installation,
                     "integration-provider", "openai_compatible", "https://example.com/v1", "ciphertext", 1,
@@ -97,11 +128,14 @@ class PostgresIntegrationTest {
                     String.class, runId));
 
             ReuseDecisionStore reuseDecisions = new ReuseDecisionStore(jdbc, dataSource, json);
+            Map<String, String> candidateRejections = new java.util.LinkedHashMap<>();
+            reuse.candidates().forEach(candidate -> candidateRejections.put(candidate.id(),
+                    "The fixture candidate does not implement the new integration-test responsibility."));
             ReuseDecisionService.Submission reuseSubmission = new ReuseDecisionService.Submission(0,
                     reuse.id(), reuse.provenance().baseSha(), reuse.provenance().headSha(),
                     reuse.provenance().adapterVersion(), reuse.provenance().baseBuildModelHash(),
                     reuse.provenance().headBuildModelHash(), "Add the smallest repository-native implementation",
-                    "new", "", Map.of(), "No retrieved candidate satisfies the required responsibility.",
+                    "new", "", candidateRejections, "No retrieved candidate satisfies the required responsibility.",
                     new ReuseDecisionService.ChangeBudget(2, 4, false),
                     new ReuseDecisionService.OptionSubmission("new", "Add a bounded implementation",
                             "Add one local implementation without changing the public contract.", "",
@@ -129,7 +163,7 @@ class PostgresIntegrationTest {
         } finally {
             try (HikariDataSource cleanup = new HikariDataSource(pool)) {
                 JdbcTemplate jdbc = new JdbcTemplate(cleanup);
-                if (runId != null) jdbc.update("DELETE FROM review_runs WHERE id=?::uuid", runId);
+                jdbc.update("DELETE FROM review_runs WHERE github_repository_id=?", repository);
                 jdbc.update("DELETE FROM repository_snapshots WHERE github_repository_id=?", repository);
                 jdbc.update("DELETE FROM provider_connections WHERE installation_id=?", installation);
                 jdbc.update("DELETE FROM github_repositories WHERE id=?", repository);

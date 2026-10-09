@@ -7,7 +7,7 @@ import java.util.List;
 import java.util.Map;
 
 public final class Models {
-    public static final String PIPELINE_VERSION = "v1.0.0-beta.1-java.6";
+    public static final String PIPELINE_VERSION = "v1.0.0-beta.1-java.16";
     public static final String DEFAULT_CONFIG_HASH = "default-v1";
 
     private Models() {}
@@ -20,6 +20,12 @@ public final class Models {
             return reviewRunId != null && !reviewRunId.isBlank() && installationId > 0
                     && notBlank(owner) && notBlank(repo) && pullNumber > 0
                     && baseSha != null && baseSha.length() >= 7 && headSha != null && headSha.length() >= 7;
+        }
+    }
+
+    public record PullRequestRevision(String baseSha, String headSha) {
+        public boolean matches(ReviewJob job) {
+            return job.baseSha().equals(baseSha) && job.headSha().equals(headSha);
         }
     }
 
@@ -129,7 +135,7 @@ public final class Models {
     ) {}
 
     public record Publication(String reviewRunId, String headSha, Long checkRunId, Long summaryCommentId) {}
-    public record ClaimedJob(String id, ReviewJob payload, int attempts) {}
+    public record ClaimedJob(String id, ReviewJob payload, int attempts, long leaseGeneration) {}
 
     public record RepositoryPolicy(
             String hash, String sourceCommitSha, String language, boolean blocking, int maxInlineComments,

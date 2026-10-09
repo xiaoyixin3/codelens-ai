@@ -1,0 +1,23 @@
+# Opt-in override; use with compose.production.yml, never as a standalone stack.
+# A separate project keeps the legacy database and queues untouched.
+name: codelens-java12-public-trial
+x-trial-image: &trial-image codelens-ai:java13-public-trial-inspect1-20261004
+
+services:
+  migrate:
+    image: *trial-image
+  api:
+    image: *trial-image
+    environment:
+      CODELENS_TRUST_PROXY: "false"
+      CODELENS_PUBLIC_TRIAL: "true"
+      CODELENS_PUBLIC_TRIAL_REPOSITORIES: codelens-ai-lab/codelens-beta-test
+  worker:
+    image: *trial-image
+    environment:
+      CODELENS_PUBLIC_TRIAL: "true"
+      CODELENS_PUBLIC_TRIAL_REPOSITORIES: codelens-ai-lab/codelens-beta-test
+      CODELENS_SEMANTIC_ENABLED: "true"
+      CODELENS_SEMANTIC_REPOSITORIES: codelens-ai-lab/codelens-beta-test
+  retention:
+    image: *trial-image

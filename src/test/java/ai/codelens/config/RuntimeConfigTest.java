@@ -8,6 +8,50 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class RuntimeConfigTest {
+    @Test void freezingRequiresExplicitActivationAndAValidSeparateKey() {
+        assertDoesNotThrow(() -> RuntimeConfig.validateFrozenPublications("false", ""));
+        assertThrows(IllegalArgumentException.class, () -> RuntimeConfig.validateFrozenPublications("true", ""));
+        assertThrows(IllegalArgumentException.class, () -> RuntimeConfig.validateFrozenPublications("yes", ""));
+        assertDoesNotThrow(() -> RuntimeConfig.validateFrozenPublications("true", java.util.Base64.getEncoder().encodeToString(new byte[32])));
+    }
+    @Test
+    void acceptsProductionReadOnlyInspectionWithWorkerIdentityRequirements() throws Exception {
+        // Generate a throwaway key in memory; never commit a PEM or log its value.
+        var generator = java.security.KeyPairGenerator.getInstance("RSA");
+        generator.initialize(2048);
+        String label = "PRIVATE KEY";
+        String privateKey = "-----BEGIN %s-----\n%s\n-----END %s-----".formatted(label,
+                java.util.Base64.getEncoder().encodeToString(generator.generateKeyPair().getPrivate().getEncoded()), label);
+        var config = config("production", "publication-inspect",
+                "postgres://codelens:a-very-long-production-password@database:5432/codelens",
+                "123", privateKey,
+                "unused-but-long-enough", false, Set.of(), "");
+        assertDoesNotThrow(config::validate);
+    }
+
+    @Test
+    void productionInspectionCannotSkipAuthenticatedAppIdentity() {
+        var config = config("production", "publication-inspect",
+                "postgres://codelens:a-very-long-production-password@database:5432/codelens",
+                "", "", "unused-but-long-enough", false, Set.of(), "");
+        assertThrows(IllegalArgumentException.class, config::validate);
+    }
+    @Test
+    void publicTrialRejectsEmptyMalformedOrAmbiguousConfiguration() {
+        assertThrows(IllegalArgumentException.class, () -> RuntimeConfig.validatePublicTrial("true", ""));
+        assertThrows(IllegalArgumentException.class, () -> RuntimeConfig.validatePublicTrial("true", "*/*"));
+        assertThrows(IllegalArgumentException.class, () -> RuntimeConfig.validatePublicTrial("yes", "owner/repo"));
+        assertDoesNotThrow(() -> RuntimeConfig.validatePublicTrial("true", "Owner/Repo, lab/java-demo"));
+        assertDoesNotThrow(() -> RuntimeConfig.validatePublicTrial("false", ""));
+    }
+
+    @Test
+    void publicTrialAllowlistRequiresAnExactRepositoryAndFailsClosed() {
+        org.junit.jupiter.api.Assertions.assertTrue(RuntimeConfig.trialRepositoryAllowed(true, Set.of("owner/repo"), "OWNER", "Repo"));
+        org.junit.jupiter.api.Assertions.assertFalse(RuntimeConfig.trialRepositoryAllowed(true, Set.of("owner/repo"), "owner", "other"));
+        org.junit.jupiter.api.Assertions.assertFalse(RuntimeConfig.trialRepositoryAllowed(true, Set.of(), "owner", "repo"));
+        org.junit.jupiter.api.Assertions.assertTrue(RuntimeConfig.trialRepositoryAllowed(false, Set.of(), "owner", "repo"));
+    }
     @Test
     void acceptsACompleteProductionApiConfiguration() {
         RuntimeConfig config = config("production", "api",

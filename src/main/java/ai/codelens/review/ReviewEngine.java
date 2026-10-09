@@ -3,10 +3,11 @@ package ai.codelens.review;
 import ai.codelens.config.RuntimeConfig;
 import ai.codelens.contracts.Models;
 import ai.codelens.github.GitHubClient;
+import ai.codelens.github.PublicationUncertainException;
+import ai.codelens.store.LeaseLostException;
 import ai.codelens.intelligence.CodeIntelligenceService;
 import ai.codelens.llm.LlmClient;
 import ai.codelens.policy.RepositoryPolicyService;
-import ai.codelens.security.Redactor;
 import ai.codelens.semantic.SemanticReviewService;
 import ai.codelens.store.JdbcStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -49,46 +50,101 @@ public class ReviewEngine {
     private final LlmClient llm;
     private final RuntimeConfig config;
     private final ObjectMapper json;
+    private final CheckPublisher checkPublisher;
 
     public ReviewEngine(JdbcStore store, GitHubClient github, RepositoryPolicyService policies,
                         CodeIntelligenceService intelligence, SemanticReviewService semantics,
                         LlmClient llm, RuntimeConfig config, ObjectMapper json) {
         this.store = store; this.github = github; this.policies = policies; this.intelligence = intelligence;
         this.semantics = semantics; this.llm = llm; this.config = config; this.json = json;
+        this.checkPublisher = new CheckPublisher(store, github, json);
     }
 
-    public void execute(Models.ReviewJob job) {
+    public void execute(Models.ReviewJob job, ReviewExecutionGuard guard) {
+        guard.check();
+        if (config.publicTrial() && !config.permitsTrialRepository(job.owner(), job.repo())) {
+            throw new IllegalArgumentException("Review repository is outside the public trial allowlist");
+        }
         Models.ReviewRun run = store.getReviewRun(job.reviewRunId());
+        if (run.pullNumber() != job.pullNumber() || !run.baseSha().equals(job.baseSha()) || !run.headSha().equals(job.headSha())) {
+            throw new IllegalArgumentException("Review job revision does not match persisted run");
+        }
+        // The terminal run transaction already confirmed publication. Only acknowledge the queue on recovery.
+        if (Set.of("completed", "stale").contains(run.status())) return;
+        guard.check();
+        Optional<JdbcStore.FrozenOutput> storedOutput = store.getFrozenReviewOutput(run.id());
+        Optional<FrozenReviewOutput> frozen = storedOutput.map(record -> {
+            if (!config.frozenPublicationsEnabled()) throw FrozenReviewOutput.unavailable();
+            FrozenReviewOutput output = FrozenReviewOutput.open(record, job, run.repositoryId(),
+                    config.publicTrial(), config.publicationKey(), json);
+            JdbcStore.CheckPublicationEffect start = store.getCheckPublicationEffect(run.id(), "check_start")
+                    .orElseThrow(FrozenReviewOutput::unavailable);
+            if (!start.state().equals("confirmed") || start.remoteId() == null || start.remoteId() != output.checkId()) {
+                throw FrozenReviewOutput.unavailable();
+            }
+            return output;
+        });
+        if (config.frozenPublicationsEnabled() && frozen.isEmpty()
+                && (store.getCheckPublicationEffect(run.id(), "check_result").isPresent()
+                || store.getCheckPublicationEffect(run.id(), "summary_comment").isPresent())) {
+            throw FrozenReviewOutput.unavailable(); // Never backfill an output for an already recorded write.
+        }
         Optional<Models.Publication> existing = store.getPublication(run.id());
-        long checkId = github.startCheck(job.installationId(), job.owner(), job.repo(), job.headSha(),
-                existing.map(Models.Publication::checkRunId).orElse(null));
-        store.savePublication(new Models.Publication(run.id(), job.headSha(), checkId,
-                existing.map(Models.Publication::summaryCommentId).orElse(null)));
-        store.updateReviewRun(run.id(), "in_progress", null, "", "");
+        guard.check();
+        long checkId = checkPublisher.start(job, existing.map(Models.Publication::checkRunId).orElse(null), guard);
+        confirmPublication(() -> guard.write(() -> {
+            store.savePublication(new Models.Publication(run.id(), job.headSha(), checkId,
+                    existing.map(Models.Publication::summaryCommentId).orElse(null)));
+            store.updateReviewRun(run.id(), "in_progress", null, "", "");
+        }), "check-start/local-confirmation");
 
+        if (frozen.isPresent()) {
+            guard.check();
+            if (!github.currentRevision(job.installationId(), job.owner(), job.repo(), job.pullNumber()).matches(job)) {
+                stale(job, run.id(), checkId, "The PR revision changed; frozen output was not published.", guard);
+                return;
+            }
+            if (checkId != frozen.get().checkId()) throw FrozenReviewOutput.unavailable();
+            publishOutput(job, frozen.get(), existing, guard);
+            return; // No diff fetch, policy reload, indexing or model call on this path.
+        }
+
+        guard.check();
         Models.PullRequest pull = github.getPullRequest(job.installationId(), job.owner(), job.repo(), job.pullNumber());
-        if (!pull.headSha().equals(job.headSha())) { stale(job, run.id(), checkId, "A newer PR head SHA arrived before analysis completed."); return; }
+        guard.check();
+        if (!new Models.PullRequestRevision(pull.baseSha(), pull.headSha()).matches(job)
+                || !github.currentRevision(job.installationId(), job.owner(), job.repo(), job.pullNumber()).matches(job)) {
+            stale(job, run.id(), checkId, "The PR base/head revision changed before analysis; no outdated result was posted.", guard); return;
+        }
         int originalFiles = pull.files().size();
-        Models.RepositoryPolicy policy = policies.load(run.repositoryId(), job.installationId(), job.owner(), job.repo(), job.headSha());
+        guard.check();
+        Models.RepositoryPolicy policy = trialPolicy(policies.load(run.repositoryId(), job.installationId(), job.owner(), job.repo(), job.headSha()), config.publicTrial());
         pull = new Models.PullRequest(pull.number(), pull.title(), pull.body(), pull.baseSha(), pull.headSha(), policies.filterFiles(pull.files(), policy));
-        store.updateReviewRunConfig(run.id(), policy.hash());
+        guard.write(() -> store.updateReviewRunConfig(run.id(), policy.hash()));
 
-        CodeIntelligenceService.Result analysis = intelligence.analyze(run.id(), run.repositoryId(), job, pull);
-        SemanticReviewService.Result semantic = semantics.analyze(run.repositoryId(), job, pull);
+        guard.check();
+        CodeIntelligenceService.Result analysis = intelligence.analyze(run.id(), run.repositoryId(), job, pull, guard);
+        guard.check();
+        SemanticReviewService.Result semantic = semantics.analyze(run.repositoryId(), job, pull, guard);
         Models.ImpactSummary selectedImpact = semantic.applied() ? semantic.impact() : analysis.summary();
         Models.ChangeSummary summary = summarize(pull, policy.language(), selectedImpact);
+        guard.check();
         if (llm.enabled()) {
-            try { summary = llm.generateSummary(run.id(), pull, policy, selectedImpact); }
-            catch (RuntimeException ignored) { /* deterministic summary is the safe fallback */ }
+            try { summary = llm.generateSummary(run.id(), pull, policy, selectedImpact, guard::check); }
+            catch (LeaseLostException lost) { throw lost; }
+            catch (RuntimeException ignored) { summary = modelLimitation(summary, "Model summary unavailable or budget/audit refused; deterministic fallback used."); }
         }
         summary = applySemanticCoverage(summary, semantic);
         List<Models.Finding> findings = new ArrayList<>(reviewRisk(pull));
+        guard.check();
         if (llm.enabled()) {
-            try { findings.addAll(llm.reviewRisk(run.id(), pull, policy, analysis.summary())); }
-            catch (RuntimeException ignored) { /* deterministic findings remain available */ }
+            try { findings.addAll(llm.reviewRisk(run.id(), pull, policy, selectedImpact, guard::check)); }
+            catch (LeaseLostException lost) { throw lost; }
+            catch (RuntimeException ignored) { summary = modelLimitation(summary, "Model risk review unavailable or budget/audit refused; no model risk coverage claimed."); }
         }
         findings = deduplicateAndThreshold(findings, policy);
-        store.saveFindings(run.id(), findings);
+        List<Models.Finding> savedFindings = findings;
+        guard.write(() -> store.saveFindings(run.id(), savedFindings));
         int verified = (int) findings.stream().filter(item -> item.status().equals("verified")).count();
         int published = (int) findings.stream().filter(Models.Finding::publishable).count();
         int rejected = findings.size() - verified;
@@ -98,37 +154,87 @@ public class ReviewEngine {
                 .withPolicy(new Models.PolicySummary(policy.hash(), policy.rules().size(), pull.files().size(), originalFiles - pull.files().size(),
                         policy.blocking(), policy.language(), policy.warnings()));
 
-        if (!github.currentHead(job.installationId(), job.owner(), job.repo(), job.pullNumber()).equals(job.headSha())) {
-            stale(job, run.id(), checkId, "A newer PR head SHA arrived before publishing; no outdated result was posted."); return;
+        guard.check();
+        if (!github.currentRevision(job.installationId(), job.owner(), job.repo(), job.pullNumber()).matches(job)) {
+            stale(job, run.id(), checkId, "The PR base/head revision changed before publishing; no outdated result was posted.", guard); return;
         }
         String markdown = renderMarkdown(summary, semantic);
-        List<Models.Annotation> annotations = findings.stream().filter(Models.Finding::publishable).limit(config.maxInlineComments())
+        List<Models.Annotation> annotations = findings.stream().filter(Models.Finding::publishable).limit(Math.min(50, config.maxInlineComments()))
                 .map(item -> new Models.Annotation(item.path(), item.line(), item.line(),
                         Set.of("critical", "high").contains(item.severity()) ? "failure" : item.severity().equals("medium") ? "warning" : "notice",
                         truncate(item.severity().toUpperCase() + ": " + item.title(), 255),
                         truncate(item.claim() + "\n\nSuggestion: " + item.suggestion(), 64_000),
                         "Confidence: %.2f\nVerification: %s".formatted(item.confidence(), item.verification()))).toList();
-        String conclusion = summary.riskLevel().equals("high") ? (policy.blocking() ? "failure" : "neutral") : "success";
-        github.completeCheck(job.installationId(), job.owner(), job.repo(), checkId, conclusion,
-                "CodeLens review: " + summary.riskLevel() + " risk", markdown, annotations);
-        long commentId = github.upsertSummaryComment(job.installationId(), job.owner(), job.repo(), job.pullNumber(), markdown,
-                existing.map(Models.Publication::summaryCommentId).orElse(null));
-        store.savePublication(new Models.Publication(run.id(), job.headSha(), checkId, commentId));
-        store.updateReviewRun(run.id(), "completed", toJson(summary), "", "");
+        String conclusion = config.publicTrial() ? "neutral" : summary.riskLevel().equals("high") ? (policy.blocking() ? "failure" : "neutral") : "success";
+        String finalSummary = toJson(summary);
+        FrozenReviewOutput output = new FrozenReviewOutput(1, job, run.repositoryId(), checkId, conclusion,
+                "CodeLens review: " + summary.riskLevel() + " risk", markdown, annotations, finalSummary);
+        if (config.frozenPublicationsEnabled()) {
+            FrozenReviewOutput.Sealed sealed = output.seal(config.publicationKey(), json);
+            try {
+                guard.write(() -> store.freezeReviewOutput(job, run.repositoryId(), sealed.hash(), sealed.ciphertext()));
+            } catch (LeaseLostException lost) { throw lost; }
+            catch (RuntimeException failed) { throw FrozenReviewOutput.unavailable(); }
+        }
+        publishOutput(job, output, existing, guard);
     }
 
-    public void fail(Models.ReviewJob job, String detail) {
+    private void publishOutput(Models.ReviewJob job, FrozenReviewOutput output,
+                               Optional<Models.Publication> existing, ReviewExecutionGuard guard) {
+        guard.check();
+        checkPublisher.complete(job, output.checkId(), output.conclusion(), output.title(),
+                output.markdown(), output.annotations(), guard);
+        confirmPublication(() -> {
+            guard.check();
+            long commentId = checkPublisher.summary(job, output.markdown(),
+                    existing.map(Models.Publication::summaryCommentId).orElse(null), guard);
+            guard.write(() -> {
+                store.savePublication(new Models.Publication(job.reviewRunId(), job.headSha(), output.checkId(), commentId));
+                store.updateReviewRun(job.reviewRunId(), "completed", output.summaryJson(), "", "");
+            });
+        }, "check-completion/local-confirmation");
+    }
+
+    private static void confirmPublication(Runnable confirmation, String stage) {
+        try { confirmation.run(); }
+        catch (LeaseLostException | PublicationUncertainException exception) { throw exception; }
+        catch (RuntimeException exception) {
+            throw new PublicationUncertainException("CONFIRM", stage, exception);
+        }
+    }
+
+    static Models.RepositoryPolicy trialPolicy(Models.RepositoryPolicy policy, boolean publicTrial) {
+        if (!publicTrial) return policy;
+        List<String> warnings = new ArrayList<>(policy.warnings());
+        warnings.add("Public trial: advisory only; repository blocking requests are ignored. This is not a quality approval.");
+        String hash;
+        try {
+            hash = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(("public-trial-v1:" + policy.hash()).getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException exception) { throw new IllegalStateException(exception); }
+        return new Models.RepositoryPolicy(hash, policy.sourceCommitSha(), policy.language(), false,
+                policy.maxInlineComments(), policy.minimumConfidence(), policy.include(), policy.exclude(),
+                policy.rules(), policy.guidance(), List.copyOf(warnings));
+    }
+
+    public void fail(Models.ReviewJob job, String detail, ReviewExecutionGuard guard) {
+        guard.check();
+        if (config.publicTrial() && !config.permitsTrialRepository(job.owner(), job.repo())) return;
         store.getPublication(job.reviewRunId()).filter(value -> value.checkRunId() != null).ifPresent(publication -> {
-            try { github.completeCheck(job.installationId(), job.owner(), job.repo(), publication.checkRunId(), "failure",
-                    "CodeLens review failed", "The review could not be completed after three attempts.", List.of()); }
+            guard.check();
+            try { checkPublisher.complete(job, publication.checkRunId(), config.publicTrial() ? "neutral" : "failure",
+                    "CodeLens review failed", "The review could not be completed after three attempts.", List.of(), guard); }
+            catch (PublicationUncertainException exception) { throw exception; }
             catch (RuntimeException ignored) {}
         });
-        store.updateReviewRun(job.reviewRunId(), "failed", null, "WORKER_FAILED", truncate(Redactor.redact(detail), 2000));
+        // The queue and run failure are committed together by the fenced retry operation.
+        guard.check();
     }
 
-    private void stale(Models.ReviewJob job, String runId, long checkId, String detail) {
-        github.completeCheck(job.installationId(), job.owner(), job.repo(), checkId, "stale", "CodeLens review superseded", detail, List.of());
-        store.updateReviewRun(runId, "stale", null, "", "");
+    private void stale(Models.ReviewJob job, String runId, long checkId, String detail, ReviewExecutionGuard guard) {
+        guard.check();
+        checkPublisher.complete(job, checkId, "cancelled", "CodeLens review superseded", detail, List.of(), guard);
+        confirmPublication(() -> guard.write(() -> store.updateReviewRun(runId, "stale", null, "", "")), "stale/local-confirmation");
     }
 
     static Models.ChangeSummary summarize(Models.PullRequest pull, String language, Models.ImpactSummary impact) {
@@ -151,13 +257,25 @@ public class ReviewEngine {
     }
 
     static Models.ChangeSummary applySemanticCoverage(Models.ChangeSummary summary, SemanticReviewService.Result semantic) {
-        if (semantic.applied()) return summary.withCoverage(semantic.coverage());
+        if (semantic.applied()) {
+            var coverage = semantic.coverage();
+            List<String> limitations = new ArrayList<>(coverage.limitations());
+            summary.coverage().limitations().stream().filter(value -> value.startsWith("Model ")).forEach(limitations::add);
+            return summary.withCoverage(new Models.Coverage(coverage.reviewedFiles(), coverage.totalFiles(),
+                    coverage.truncated() || summary.coverage().truncated(), coverage.analysisLevel(), coverage.executionLevel(), limitations));
+        }
         if (!semantic.attempted()) return summary;
         List<String> limitations = new ArrayList<>(summary.coverage().limitations());
         limitations.add("Whole-repository Java semantics failed closed (" + semantic.reason()
                 + "); the published result remains diff-only fallback evidence.");
         return summary.withCoverage(new Models.Coverage(summary.coverage().reviewedFiles(), summary.coverage().totalFiles(),
                 summary.coverage().truncated(), "diff-only/fallback", semantic.executionLevel(), limitations));
+    }
+
+    private static Models.ChangeSummary modelLimitation(Models.ChangeSummary summary, String limitation) {
+        var coverage = summary.coverage(); List<String> limitations = new ArrayList<>(coverage.limitations()); limitations.add(limitation);
+        return summary.withCoverage(new Models.Coverage(coverage.reviewedFiles(), coverage.totalFiles(), coverage.truncated(),
+                coverage.analysisLevel(), coverage.executionLevel(), limitations));
     }
 
     static List<Models.Finding> reviewRisk(Models.PullRequest pull) {

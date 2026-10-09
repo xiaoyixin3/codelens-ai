@@ -146,9 +146,9 @@ func (s *Store) CreateOrGetReviewRun(ctx context.Context, input CreateReviewRunI
 	row := s.pool.QueryRow(ctx, `
 		INSERT INTO review_runs (
 			id, github_repository_id, pull_number, base_sha, head_sha, status,
-			pipeline_version, config_hash, trigger, request_key
-		) VALUES ($1,$2,$3,$4,$5,'queued',$6,$7,$8,$9)
-		ON CONFLICT (github_repository_id, pull_number, head_sha, pipeline_version, request_key)
+			pipeline_version, config_hash, trigger, request_key, enqueue_config_hash
+		) VALUES ($1,$2,$3,$4,$5,'queued',$6,$7,$8,$9,$7)
+		ON CONFLICT (github_repository_id, pull_number, base_sha, head_sha, enqueue_config_hash, pipeline_version, request_key)
 		DO NOTHING RETURNING id, github_repository_id, pull_number, base_sha, head_sha,
 		status, pipeline_version, config_hash, trigger, request_key, COALESCE(summary, 'null'::jsonb)`,
 		id, input.RepositoryID, input.PullNumber, input.BaseSHA, input.HeadSHA,
@@ -164,8 +164,8 @@ func (s *Store) CreateOrGetReviewRun(ctx context.Context, input CreateReviewRunI
 		SELECT id, github_repository_id, pull_number, base_sha, head_sha,
 		status, pipeline_version, config_hash, trigger, request_key, COALESCE(summary, 'null'::jsonb)
 		FROM review_runs WHERE github_repository_id=$1 AND pull_number=$2 AND head_sha=$3
-		AND pipeline_version=$4 AND request_key=$5 LIMIT 1`,
-		input.RepositoryID, input.PullNumber, input.HeadSHA, input.PipelineVersion, input.RequestKey)
+		AND pipeline_version=$4 AND request_key=$5 AND base_sha=$6 AND enqueue_config_hash=$7 LIMIT 1`,
+		input.RepositoryID, input.PullNumber, input.HeadSHA, input.PipelineVersion, input.RequestKey, input.BaseSHA, input.ConfigHash)
 	run, err = scanReviewRun(row)
 	return run, false, err
 }
@@ -207,9 +207,9 @@ func (s *Store) CreateOrGetReviewRunAndEnqueue(ctx context.Context, input Create
 	run, err := scanReviewRun(tx.QueryRow(ctx, `
 		INSERT INTO review_runs (
 			id, github_repository_id, pull_number, base_sha, head_sha, status,
-			pipeline_version, config_hash, trigger, request_key
-		) VALUES ($1,$2,$3,$4,$5,'queued',$6,$7,$8,$9)
-		ON CONFLICT (github_repository_id, pull_number, head_sha, pipeline_version, request_key)
+			pipeline_version, config_hash, trigger, request_key, enqueue_config_hash
+		) VALUES ($1,$2,$3,$4,$5,'queued',$6,$7,$8,$9,$7)
+		ON CONFLICT (github_repository_id, pull_number, base_sha, head_sha, enqueue_config_hash, pipeline_version, request_key)
 		DO NOTHING RETURNING id, github_repository_id, pull_number, base_sha, head_sha,
 		status, pipeline_version, config_hash, trigger, request_key, COALESCE(summary, 'null'::jsonb)`,
 		id, input.RepositoryID, input.PullNumber, input.BaseSHA, input.HeadSHA,
@@ -220,8 +220,8 @@ func (s *Store) CreateOrGetReviewRunAndEnqueue(ctx context.Context, input Create
 			SELECT id, github_repository_id, pull_number, base_sha, head_sha,
 			status, pipeline_version, config_hash, trigger, request_key, COALESCE(summary, 'null'::jsonb)
 			FROM review_runs WHERE github_repository_id=$1 AND pull_number=$2 AND head_sha=$3
-			AND pipeline_version=$4 AND request_key=$5 LIMIT 1`,
-			input.RepositoryID, input.PullNumber, input.HeadSHA, input.PipelineVersion, input.RequestKey))
+			AND pipeline_version=$4 AND request_key=$5 AND base_sha=$6 AND enqueue_config_hash=$7 LIMIT 1`,
+			input.RepositoryID, input.PullNumber, input.HeadSHA, input.PipelineVersion, input.RequestKey, input.BaseSHA, input.ConfigHash))
 	}
 	if err != nil {
 		return contracts.ReviewRun{}, false, err

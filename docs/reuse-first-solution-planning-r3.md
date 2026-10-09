@@ -100,13 +100,56 @@ Implemented:
 - installation-scoped approval API using the shared constant-time admin boundary;
 - persisted, provenance-bound `ReuseDecision` and selected `SolutionOption` revisions;
 - optimistic revision checks and retained superseded decisions.
+- production Java read-only local diff preview of supplied line edits, after
+  approval, bound to indexed Head bytes and actual changed semantic symbols;
+- declaration/field and bounded rewrite checks, with a second persisted-context
+  read before returning the preview (see the 2026-10-05 evidence below).
 
 Still open before declaring R3 complete:
 
-- generate a genuinely local patch preview only after option approval;
+- automatically propose a genuinely local repair from an approved option;
+  the current preview validates supplied edits, not goal-to-repair synthesis;
+- integrate the preview into assisted UI (never gold labeling UI);
+- prove candidate use, compilation, targeted tests and behavioral compatibility
+  in an explicitly approved isolated verification environment;
 - route that preview through the publication gate in the production worker;
 - run calibrated samples proving every code modification suggestion has either
   a usable candidate or a valid “new” proof.
 
 R3 is therefore **implemented as a safe planning foundation, not exited**.
+
+## 2026-10-05: bounded local preview backend
+
+`POST /api/v2/reviews/{reviewRunId}/reuse-planning/patch-preview` reuses the Java
+approval store, validator, frozen semantic file hashes/symbols, JavaParser and
+redactor. It accepts proposed line edits and original Head source; it does not
+call an LLM, fetch GitHub content, write repository files or save a draft.
+Source must match the indexed UTF-8 hash exactly. An approved declaration/field
+change is still unsupported here, even when the decision budget allows it.
+
+Only existing method/constructor bodies are supported. Actual AST changes must
+map uniquely to approved frozen symbols; signatures, fields and new declarations
+are rejected. Large-body rewrite detection is a conservative text heuristic,
+not proof of correct reuse. The selected candidate's use/type correctness and
+public behavioral contract remain unverified. Both publication and automatic
+application are always disabled; remote current PR SHA is not checked.
+
+Evidence: [local patch preview](evidence/r3-local-patch-preview-2026-10-05.md).
+No new migration, worker publication route, deployment or R3 exit claim.
+
+## 2026-10-05: internal Java execution prototype (not activation)
+
+A separate standard-library Java 17 Docker prototype reuses the preview's
+validated before/after material. It journals bounded hash-only plans before
+execution and probes existing tests, Head regression failure and patched
+regression success in separate no-network containers. Actual synthetic tests
+exercise compilation failure, no reproduction, remaining failure and timeouts.
+
+This is not a production S2 permission, a Maven/Gradle/JUnit adapter or proof of
+correct reuse. All verified-fix/apply/publication flags remain false; nothing is
+wired into the API, worker or gold UI. Trusted material provenance, fresh scope/
+revision checks, durable production audit/budget, independent crash-surviving
+timeouts and isolation security acceptance remain prerequisites.
+See [prototype design](java-sandbox-prototype.md) and
+[evidence](evidence/java-sandbox-prototype-2026-10-05.md). R3/R4 remain open.
 

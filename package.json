@@ -12,6 +12,7 @@
     "node": ">=24"
   },
   "scripts": {
+    "review:local": "node --import tsx scripts/start-local-review.ts",
     "dev:api": "mvn -q -DskipTests package && java -Dcodelens.mode=api -jar target/codelens-ai.jar",
     "dev:worker": "mvn -q -DskipTests package && java -Dcodelens.mode=worker -jar target/codelens-ai.jar",
     "start:api": "java -Dcodelens.mode=api -jar target/codelens-ai.jar",
@@ -25,6 +26,7 @@
     "build:legacy": "tsup",
     "typecheck": "tsc --noEmit",
     "security:scan": "node --import tsx scripts/scan-secrets.ts",
+    "ops:rehearse-upgrade": "node --import tsx scripts/rehearse-publication-upgrade.ts --isolated-fixture",
     "test": "vitest run",
     "test:watch": "vitest",
     "benchmark": "node --env-file-if-exists=.env --import tsx scripts/benchmark.ts",

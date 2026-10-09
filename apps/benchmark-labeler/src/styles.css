@@ -5,6 +5,39 @@
   font-synthesis: none;
 }
 
+.local-mode { min-width: 0; }
+.local-entry { padding: 16px 24px; border-bottom: 1px solid #dce2ea; background: white; }
+.local-entry > div { display: flex; align-items: baseline; gap: 14px; margin-bottom: 12px; }
+.local-entry small, .local-entry p { color: #66738a; font-size: 12px; }
+.local-entry p { margin: 9px 0 0; overflow-wrap: anywhere; }
+.local-entry form { display: flex; align-items: end; gap: 12px; }
+.local-entry label { display: grid; gap: 5px; font-size: 12px; color: #45536a; }
+.local-entry input { width: 140px; padding: 9px; border: 1px solid #c9d3e1; border-radius: 6px; }
+.local-entry .repo-input { flex: 1; }.local-entry .repo-input input { width: 100%; }
+.local-entry button { padding: 10px 20px; border: 0; border-radius: 6px; background: #3c62e8; color: white; }
+.local-mode .shell { min-height: 0; grid-template-columns: 225px minmax(0, 1fr); }
+.local-mode .sidebar, .local-mode .workspace { height: calc(100vh - 164px); min-height: 560px; }
+.local-mode .review-grid { grid-template-columns: minmax(0, 1fr) 290px; }
+.local-mode .decision-panel p { font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.local-mode .workspace-tabs { overflow-x: auto; flex-shrink: 0; }
+.local-mode .workspace-tabs button { white-space: nowrap; }
+@media (max-width: 1000px) {
+  .local-mode .shell { grid-template-columns: 1fr; }.local-mode .sidebar { display: none; }
+  .local-mode .review-grid { grid-template-columns: minmax(0, 1fr) 260px; }
+}
+@media (max-width: 650px) {
+  .local-entry { padding: 14px; }.local-entry > div { display: grid; gap: 6px; }
+  .local-entry form { flex-wrap: wrap; }.local-entry .repo-input { flex-basis: 100%; }
+  .local-entry input { width: 100%; }.local-entry label:not(.repo-input) { width: calc(50% - 6px); }
+  .local-entry button { width: 100%; }.local-mode .workspace { height: auto; }
+  .local-mode .topbar { padding: 12px; gap: 8px; }.local-mode .topbar h1 { font-size: 14px; }
+  .local-mode .review-grid { display: flex; flex-direction: column; padding: 8px; }
+  .local-mode .diff-panel { min-height: 530px; }.local-mode .decision-panel { overflow: visible; }
+  .local-mode .decision-scroll { max-height: none; }.local-mode .context-layout { display: flex; flex-direction: column; }
+  .local-mode .context-source { min-width: 0; min-height: 350px; }
+  .local-mode .brief-metrics { flex-wrap: wrap; }
+}
+
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 1180px; min-height: 100vh; }
 button, input, textarea, select { font: inherit; }

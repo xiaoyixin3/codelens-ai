@@ -134,12 +134,12 @@ export class PostgresReviewStore implements ReviewStore {
     const inserted = await this.#sql<ReviewRunRow[]>`
       INSERT INTO review_runs (
         id, github_repository_id, pull_number, base_sha, head_sha,
-        status, pipeline_version, config_hash, trigger, request_key
+        status, pipeline_version, config_hash, trigger, request_key, enqueue_config_hash
       ) VALUES (
         ${id}, ${input.repositoryId}, ${input.pullNumber}, ${input.baseSha}, ${input.headSha},
-        'queued', ${input.pipelineVersion}, ${input.configHash}, ${trigger}, ${requestKey}
+        'queued', ${input.pipelineVersion}, ${input.configHash}, ${trigger}, ${requestKey}, ${input.configHash}
       )
-      ON CONFLICT (github_repository_id, pull_number, head_sha, pipeline_version, request_key)
+      ON CONFLICT (github_repository_id, pull_number, base_sha, head_sha, enqueue_config_hash, pipeline_version, request_key)
       DO NOTHING
       RETURNING *
     `;
@@ -150,7 +150,9 @@ export class PostgresReviewStore implements ReviewStore {
       SELECT * FROM review_runs
       WHERE github_repository_id = ${input.repositoryId}
         AND pull_number = ${input.pullNumber}
+        AND base_sha = ${input.baseSha}
         AND head_sha = ${input.headSha}
+        AND enqueue_config_hash = ${input.configHash}
         AND pipeline_version = ${input.pipelineVersion}
         AND request_key = ${requestKey}
       LIMIT 1
@@ -253,6 +255,7 @@ export class PostgresReviewStore implements ReviewStore {
 }
 
 export class InMemoryReviewStore implements ReviewStore {
+  readonly #enqueueHashes = new Map<string, string>();
   readonly deliveries = new Set<string>();
   readonly runs = new Map<string, ReviewRun>();
   readonly publications = new Map<string, Publication>();
@@ -273,7 +276,9 @@ export class InMemoryReviewStore implements ReviewStore {
       (run) =>
         run.repositoryId === input.repositoryId &&
         run.pullNumber === input.pullNumber &&
+        run.baseSha === input.baseSha &&
         run.headSha === input.headSha &&
+        this.#enqueueHashes.get(run.id) === input.configHash &&
         run.pipelineVersion === input.pipelineVersion &&
         run.requestKey === (input.requestKey ?? 'automatic')
     );
@@ -295,6 +300,7 @@ export class InMemoryReviewStore implements ReviewStore {
       updatedAt: now
     };
     this.runs.set(run.id, run);
+    this.#enqueueHashes.set(run.id, input.configHash);
     return { run, created: true };
   }
 

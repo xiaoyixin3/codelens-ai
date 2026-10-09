@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { ChangeBrief, ReviewContextBundle } from '@codelens/evaluation';
+import { changeEvidenceId } from '@codelens/evaluation';
 
 const unique = <T>(values: T[]): T[] => [...new Set(values)];
 const isTestPath = (value: string): boolean => /(?:^|\/)(?:test|tests|__tests__|spec)(?:\/|\.|$)/i.test(value)
@@ -129,8 +130,8 @@ function relationEvidence(bundle: ReviewContextBundle, symbolId: string, coreIds
 }
 
 function sharedCallerEvidence(bundle: ReviewContextBundle, symbolId: string, coreIds: Set<string>): string[] {
-  const coreCallers = new Set(bundle.relationships.filter((edge) => coreIds.has(edge.toSymbolId)).map((edge) => edge.fromSymbolId));
-  return bundle.relationships.flatMap((edge, index) => coreCallers.has(edge.fromSymbolId) && edge.toSymbolId === symbolId
+  const coreCallers = new Set(bundle.relationships.filter((edge) => edge.type === 'calls' && coreIds.has(edge.toSymbolId)).map((edge) => edge.fromSymbolId));
+  return bundle.relationships.flatMap((edge, index) => edge.type === 'calls' && coreCallers.has(edge.fromSymbolId) && edge.toSymbolId === symbolId
     ? [`relationship:${index}`]
     : []);
 }
@@ -150,7 +151,7 @@ export function retrieveReuseCandidates(brief: ChangeBrief, bundle?: ReviewConte
     for (const symbol of headSymbols) {
       const directEvidence = relationEvidence(bundle!, symbol.id, coreIds);
       const callerEvidence = sharedCallerEvidence(bundle!, symbol.id, coreIds);
-      const evidenceIds = unique([`symbol:${symbol.id}`, ...directEvidence, ...callerEvidence]);
+      const evidenceIds = unique([changeEvidenceId(`symbol:${symbol.id}`), ...directEvidence, ...callerEvidence]);
       let relationship: ReuseCandidate['relationship'] | undefined;
       let fit: ReuseCandidate['fit'] = 'partial';
       let score = 0;

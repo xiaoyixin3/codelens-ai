@@ -32,6 +32,7 @@ import com.github.javaparser.resolution.declarations.ResolvedFieldDeclaration;
 import com.github.javaparser.resolution.declarations.ResolvedMethodDeclaration;
 import com.github.javaparser.resolution.declarations.ResolvedValueDeclaration;
 import com.github.javaparser.symbolsolver.JavaSymbolSolver;
+import com.github.javaparser.symbolsolver.javaparsermodel.JavaParserFacade;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.CombinedTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.JavaParserTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.JarTypeSolver;
@@ -73,7 +74,10 @@ import static ai.codelens.semantic.SemanticModels.RelationType.THROWS;
 import static ai.codelens.semantic.SemanticModels.RelationType.WRITES;
 
 public final class JavaSemanticAdapter implements SemanticAdapter {
-    public static final String ADAPTER_VERSION = "javaparser-3.28.2-v4";
+    public static final String ADAPTER_VERSION = "javaparser-3.28.2-v6";
+    // The pinned solver uses a global facade cache with strong back-references to TypeSolvers.
+    // All CodeLens symbol-solving sessions share this interruptible lifecycle boundary.
+    private static final java.util.concurrent.locks.ReentrantLock SOLVER_LIFECYCLE = new java.util.concurrent.locks.ReentrantLock();
     private static final Set<String> EXCLUDED_DIRECTORIES = Set.of(
             ".git", ".gradle", ".idea", "target", "build", "node_modules", "dist", "out"
     );
@@ -123,7 +127,7 @@ public final class JavaSemanticAdapter implements SemanticAdapter {
             if (source != null) affected.add(source.path());
         }
 
-        SemanticModels.Index changed = indexSelected(repositoryRoot, commitSha, buildModel, affected);
+        SemanticModels.Index changed = indexSelected(repositoryRoot, commitSha, buildModel, affected, base.symbols());
         Set<String> newlyResolvableTargets = unresolvedTargetCandidates(changed.symbols());
         boolean expanded = false;
         for (SemanticModels.Relationship relationship : base.relationships()) {
@@ -131,7 +135,7 @@ public final class JavaSemanticAdapter implements SemanticAdapter {
             SemanticModels.Symbol source = baseSymbols.get(relationship.fromStableKey());
             if (source != null) expanded |= affected.add(source.path());
         }
-        if (expanded) changed = indexSelected(repositoryRoot, commitSha, buildModel, affected);
+        if (expanded) changed = indexSelected(repositoryRoot, commitSha, buildModel, affected, base.symbols());
         List<SemanticModels.FileStatus> files = new ArrayList<>();
         base.files().stream().filter(file -> !affected.contains(file.path()))
                 .map(file -> new SemanticModels.FileStatus(file.path(), file.status(), file.reason(), file.contentHash(), true))
@@ -164,7 +168,7 @@ public final class JavaSemanticAdapter implements SemanticAdapter {
         if (reused > 0) degradations.put("incremental_reused_file", (long) reused);
         if (unresolved > 0) degradations.put("unresolved_relationship", (long) unresolved);
         SemanticModels.CoverageLevel level = indexed == 0 ? FAILED
-                : failed > 0 || skipped > 0 ? SEMANTIC_PARTIAL : SEMANTIC;
+                : failed > 0 || skipped > 0 || buildModelDegraded(buildModel, degradations) ? SEMANTIC_PARTIAL : SEMANTIC;
         SemanticModels.Coverage coverage = new SemanticModels.Coverage(
                 level, files.size(), indexed, failed, skipped, reused, resolved, unresolved, degradations
         );
@@ -178,6 +182,30 @@ public final class JavaSemanticAdapter implements SemanticAdapter {
     }
 
     private SemanticModels.Index indexSelected(Path repositoryRoot, String commitSha, BuildModel buildModel, Set<String> selectedPaths) {
+        return indexSelected(repositoryRoot, commitSha, buildModel, selectedPaths, List.of());
+    }
+
+    private SemanticModels.Index indexSelected(Path repositoryRoot, String commitSha, BuildModel buildModel,
+                                               Set<String> selectedPaths, List<SemanticModels.Symbol> reusableSymbols) {
+        try {
+            SOLVER_LIFECYCLE.lockInterruptibly();
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted waiting for semantic solver session", exception);
+        }
+        try {
+            return indexSelectedInSession(repositoryRoot, commitSha, buildModel, selectedPaths, reusableSymbols);
+        } finally {
+            try {
+                synchronized (JavaParserFacade.class) { JavaParserFacade.clearInstances(); }
+            } finally {
+                SOLVER_LIFECYCLE.unlock();
+            }
+        }
+    }
+
+    private SemanticModels.Index indexSelectedInSession(Path repositoryRoot, String commitSha, BuildModel buildModel,
+                                                        Set<String> selectedPaths, List<SemanticModels.Symbol> reusableSymbols) {
         Path root = repositoryRoot.toAbsolutePath().normalize();
         if (!Files.isDirectory(root)) throw new IllegalArgumentException("Repository root does not exist: " + root);
 
@@ -187,7 +215,8 @@ public final class JavaSemanticAdapter implements SemanticAdapter {
         List<Path> files = selectedPaths == null ? allFiles : allFiles.stream()
                 .filter(file -> selectedPaths.contains(relative(root, file)))
                 .toList();
-        CombinedTypeSolver typeSolver = new CombinedTypeSolver(new ReflectionTypeSolver(false));
+        // The reviewer's application classpath is not evidence about the input repository.
+        CombinedTypeSolver typeSolver = new CombinedTypeSolver(new ReflectionTypeSolver(true));
         sourceRoots.forEach(path -> typeSolver.add(new JavaParserTypeSolver(path)));
         Map<String, Long> degradations = buildModelDegradations(buildModel);
         for (BuildModel.ClasspathEntry entry : buildModel.dependencyClasspath()) {
@@ -253,6 +282,9 @@ public final class JavaSemanticAdapter implements SemanticAdapter {
         List<SemanticModels.Symbol> symbols = new ArrayList<>();
         Map<Node, String> symbolByNode = new IdentityHashMap<>();
         Map<String, SemanticModels.Symbol> symbolByKey = new LinkedHashMap<>();
+        // Reuse only unaffected declarations for fallback lookup; never return stale changed symbols.
+        reusableSymbols.stream().filter(symbol -> selectedPaths != null && !selectedPaths.contains(symbol.path()))
+                .forEach(symbol -> symbolByKey.putIfAbsent(symbol.stableKey(), symbol));
         for (Unit unit : units) extractSymbols(unit, symbols, symbolByNode, symbolByKey, degradations);
 
         Map<String, SemanticModels.Relationship> relationships = new LinkedHashMap<>();
@@ -269,10 +301,8 @@ public final class JavaSemanticAdapter implements SemanticAdapter {
         long resolved = relationships.values().stream().filter(SemanticModels.Relationship::typeResolved).count();
         long unresolved = relationships.size() - resolved;
         if (unresolved > 0) degradations.put("unresolved_relationship", unresolved);
-        boolean buildModelDegraded = !buildModel.degradations().isEmpty()
-                || degradations.keySet().stream().anyMatch(key -> key.startsWith("dependency_jar_"));
         SemanticModels.CoverageLevel level = indexed == 0 ? FAILED
-                : failed > 0 || skipped > 0 || buildModelDegraded ? SEMANTIC_PARTIAL : SEMANTIC;
+                : failed > 0 || skipped > 0 || buildModelDegraded(buildModel, degradations) ? SEMANTIC_PARTIAL : SEMANTIC;
         SemanticModels.Coverage coverage = new SemanticModels.Coverage(
                 level, eligible, indexed, failed, skipped, 0, Math.toIntExact(resolved), Math.toIntExact(unresolved), degradations
         );
@@ -285,6 +315,11 @@ public final class JavaSemanticAdapter implements SemanticAdapter {
                         .thenComparingInt(SemanticModels.Relationship::sourceLine))
                 .toList();
         return new SemanticModels.Index(commitSha, version(), buildModel.hash(), statuses, symbols, sortedRelationships, coverage);
+    }
+
+    private static boolean buildModelDegraded(BuildModel buildModel, Map<String, Long> degradations) {
+        return !buildModel.degradations().isEmpty()
+                || degradations.keySet().stream().anyMatch(key -> key.startsWith("dependency_jar_"));
     }
 
     private static Map<String, Long> buildModelDegradations(BuildModel buildModel) {
@@ -390,6 +425,7 @@ public final class JavaSemanticAdapter implements SemanticAdapter {
     private static void extractAnnotations(Unit unit, Map<Node, String> symbolByNode,
                                            Map<String, SemanticModels.Relationship> relationships) {
         symbolByNode.forEach((node, from) -> {
+            if (node.findCompilationUnit().orElse(null) != unit.compilationUnit()) return;
             if (!(node instanceof NodeWithAnnotations<?> annotated)) return;
             for (AnnotationExpr annotation : annotated.getAnnotations()) {
                 ResolvedName resolved = resolve(() -> annotation.resolve().getQualifiedName(), annotation::getNameAsString);
@@ -672,11 +708,13 @@ public final class JavaSemanticAdapter implements SemanticAdapter {
                 .filter(creation -> creation.getAnonymousClassBody().isPresent());
         if (anonymous.isEmpty() && !resolvedOwner.contains(".Anonymous-")) return resolvedOwner;
         ObjectCreationExpr creation = anonymous.orElse(null);
-        String outer = creation == null
-                ? method.findAncestor(TypeDeclaration.class).map(JavaSemanticAdapter::astTypeName).orElse("<unknown>")
-                : creation.findAncestor(TypeDeclaration.class).map(JavaSemanticAdapter::astTypeName).orElse("<unknown>");
-        int line = creation == null ? begin(method) : begin(creation);
-        return outer + "$anonymous@" + line;
+        if (creation != null) return stableAnonymousOwner(creation);
+        throw new IllegalStateException("Anonymous method declaration has no source creation");
+    }
+
+    private static String stableAnonymousOwner(ObjectCreationExpr creation) {
+        String outer = creation.findAncestor(TypeDeclaration.class).map(JavaSemanticAdapter::astTypeName).orElse("<unknown>");
+        return outer + "$anonymous@" + begin(creation) + ":" + creation.getBegin().map(position -> position.column).orElse(1);
     }
 
     private static ResolvedConstructor resolveConstructor(ConstructorDeclaration constructor) {
@@ -692,6 +730,9 @@ public final class JavaSemanticAdapter implements SemanticAdapter {
 
     private static ResolvedName resolveConstructorCall(ObjectCreationExpr call) {
         try {
+            if (call.getAnonymousClassBody().isPresent()) {
+                return new ResolvedName("java:constructor:" + stableAnonymousOwner(call) + "#<init>(" + parameters(call.resolve()) + ")", true);
+            }
             return new ResolvedName(constructorKey(call.resolve()), true);
         } catch (RuntimeException directResolutionFailure) {
             try {
@@ -706,7 +747,13 @@ public final class JavaSemanticAdapter implements SemanticAdapter {
     }
 
     private static String methodKey(ResolvedMethodDeclaration method) {
-        return "java:method:" + method.declaringType().getQualifiedName() + "#" + method.getName() + "(" + parameters(method) + ")";
+        String resolvedOwner = method.declaringType().getQualifiedName();
+        String owner = method.toAst(MethodDeclaration.class)
+                .map(declaration -> stableMethodOwner(declaration, resolvedOwner)).orElse(resolvedOwner);
+        if (owner.matches(".*Anonymous-[0-9a-fA-F-]{36}.*")) {
+            throw new IllegalStateException("Anonymous method target has no stable source owner");
+        }
+        return "java:method:" + owner + "#" + method.getName() + "(" + parameters(method) + ")";
     }
 
     private static String constructorKey(ResolvedConstructorDeclaration constructor) {

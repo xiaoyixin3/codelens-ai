@@ -19,7 +19,7 @@ services:
       context: ..
     image: ${CODELENS_IMAGE_REFERENCE:-codelens-ai:1.0.0-beta.1}
     env_file:
-      - path: ../.env
+      - path: ${CODELENS_ENV_FILE:-../.env}
         required: false
     environment:
       CODELENS_ENVIRONMENT: production
@@ -44,7 +44,7 @@ services:
     restart: unless-stopped
     init: true
     env_file:
-      - path: ../.env
+      - path: ${CODELENS_ENV_FILE:-../.env}
         required: false
     environment:
       CODELENS_ENVIRONMENT: production
@@ -53,7 +53,9 @@ services:
       CODELENS_DB_NAME: codelens
       CODELENS_DB_USER: codelens
       CODELENS_DB_PASSWORD: ${POSTGRES_PASSWORD}
-      CODELENS_TRUST_PROXY: "true"
+      CODELENS_TRUST_PROXY: "${CODELENS_TRUST_PROXY:-false}"
+      CODELENS_PUBLIC_TRIAL: "${CODELENS_PUBLIC_TRIAL:-false}"
+      CODELENS_PUBLIC_TRIAL_REPOSITORIES: "${CODELENS_PUBLIC_TRIAL_REPOSITORIES:-}"
     command: ["java", "-Dcodelens.mode=api", "-jar", "/app/codelens-ai.jar"]
     read_only: true
     tmpfs:
@@ -65,9 +67,9 @@ services:
     mem_limit: 1g
     cpus: 1.0
     ports:
-      - "${PORT:-3000}:3000"
+      - "${CODELENS_BIND_ADDRESS:-127.0.0.1}:${PORT:-3000}:3000"
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/readyz',{signal:AbortSignal.timeout(4000)}).then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -80,7 +82,7 @@ services:
     restart: unless-stopped
     init: true
     env_file:
-      - path: ../.env
+      - path: ${CODELENS_ENV_FILE:-../.env}
         required: false
     environment:
       CODELENS_ENVIRONMENT: production
@@ -90,6 +92,10 @@ services:
       CODELENS_DB_USER: codelens
       CODELENS_DB_PASSWORD: ${POSTGRES_PASSWORD}
       CODELENS_SEMANTIC_WORKSPACE_ROOT: /var/lib/codelens/semantic
+      CODELENS_SEMANTIC_ENABLED: "${CODELENS_SEMANTIC_ENABLED:-false}"
+      CODELENS_SEMANTIC_REPOSITORIES: "${CODELENS_SEMANTIC_REPOSITORIES:-}"
+      CODELENS_PUBLIC_TRIAL: "${CODELENS_PUBLIC_TRIAL:-false}"
+      CODELENS_PUBLIC_TRIAL_REPOSITORIES: "${CODELENS_PUBLIC_TRIAL_REPOSITORIES:-}"
     command: ["java", "-Dcodelens.mode=worker", "-jar", "/app/codelens-ai.jar"]
     read_only: true
     tmpfs:
@@ -110,7 +116,7 @@ services:
     image: ${CODELENS_IMAGE_REFERENCE:-codelens-ai:1.0.0-beta.1}
     profiles: ["operations"]
     env_file:
-      - path: ../.env
+      - path: ${CODELENS_ENV_FILE:-../.env}
         required: false
     environment:
       CODELENS_DB_HOST: postgres

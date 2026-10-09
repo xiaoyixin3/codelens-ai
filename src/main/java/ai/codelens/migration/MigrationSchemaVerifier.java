@@ -10,7 +10,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 @Component
-@Profile({"api", "worker"})
+@Profile({"api", "worker", "publication-inspect"})
 public class MigrationSchemaVerifier {
     private final JdbcTemplate jdbc;
     private final MigrationManifest manifest;

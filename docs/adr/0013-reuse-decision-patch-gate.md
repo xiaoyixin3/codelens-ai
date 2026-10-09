@@ -54,3 +54,14 @@ labels.
 - R4 still owns rewrite/churn, duplicate implementation, contract-diff, build,
   and directed-test verification.
 
+## 2026-10-05 implementation note (decision unchanged)
+
+The production Java API now validates supplied line edits against a current
+approved option and indexed Head hash, then returns an ephemeral bounded diff.
+It reuses frozen symbol/decision evidence and checks actual changed AST bodies.
+This is a read-only preview, not automatic repair synthesis or `verifyPatchRelease`
+success. Candidate use, public behavior, build/tests and live remote revision
+remain unverified. All apply/publication/verified-fix flags are false. No patch
+publisher is enabled; future publication still requires every gate above.
+See [evidence](../evidence/r3-local-patch-preview-2026-10-05.md).
+

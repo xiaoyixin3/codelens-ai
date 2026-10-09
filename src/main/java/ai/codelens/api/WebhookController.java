@@ -6,6 +6,7 @@ import ai.codelens.migration.MigrationSchemaVerifier;
 import ai.codelens.security.Redactor;
 import ai.codelens.security.WebhookSecurity;
 import ai.codelens.store.JdbcStore;
+import ai.codelens.store.DeliveryConflictException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletRequest;
@@ -76,20 +77,29 @@ public class WebhookController {
         JsonNode root;
         try { root = json.readTree(body); }
         catch (IOException exception) { return response(HttpStatus.BAD_REQUEST, "invalid_json", null); }
+        if (root == null || !root.isObject()) return response(HttpStatus.BAD_REQUEST, "invalid_json", null);
+        if (config.publicTrial() && !config.permitsTrialRepository(
+                root.path("repository").path("owner").path("login").asText(""),
+                root.path("repository").path("name").asText(""))) {
+            return response(HttpStatus.ACCEPTED, "ignored_outside_public_trial", null);
+        }
+        JdbcStore.DeliveryInput delivery = new JdbcStore.DeliveryInput(deliveryId, event, text(root, "action"), body);
         try {
-            String action = text(root, "action");
-            if (!store.claimDelivery(deliveryId, event, action, body)) return response(HttpStatus.ACCEPTED, "duplicate", null);
-            Result result = switch (event) {
-                case "pull_request" -> pullRequest(root);
-                case "check_run" -> checkRun(root, deliveryId);
-                case "issue_comment" -> issueComment(root);
-                default -> new Result("ignored", null);
-            };
-            store.markDeliveryProcessed(deliveryId, "");
-            return response(HttpStatus.ACCEPTED, result.status(), result.runId());
+            JdbcStore.ProcessedDelivery processed = store.processDelivery(delivery, () -> {
+                Result result = switch (event) {
+                    case "pull_request" -> pullRequest(root);
+                    case "check_run" -> checkRun(root, deliveryId);
+                    case "issue_comment" -> issueComment(root);
+                    default -> new Result("ignored", null);
+                };
+                return new JdbcStore.DeliveryResult(result.status(), result.runId());
+            });
+            return response(HttpStatus.ACCEPTED, processed.duplicate() ? "duplicate" : processed.result().status(), processed.result().runId());
+        } catch (DeliveryConflictException conflict) {
+            return response(HttpStatus.CONFLICT, "delivery_payload_conflict", null);
         } catch (Exception exception) {
             String detail = truncate(Redactor.redact(exception.getMessage()), 2000);
-            try { store.markDeliveryProcessed(deliveryId, detail); } catch (RuntimeException ignored) {}
+            try { store.recordDeliveryFailure(delivery, detail); } catch (RuntimeException ignored) {}
             LOG.error("Webhook processing failed: {}", detail);
             return response(HttpStatus.INTERNAL_SERVER_ERROR, "internal_error", null);
         }
@@ -116,8 +126,8 @@ public class WebhookController {
         long installation = number(root, "installation", "id"); long repository = number(root, "repository", "id");
         String owner = text(root, "repository", "owner", "login"); String repo = text(root, "repository", "name");
         Result result = queue(repository, pull, base, head, installation, owner, repo, "rerun", "rerun:" + deliveryId, "rerun_queued", "rerun_already_queued");
-        if (result.runId() != null && result.status().equals("rerun_queued")) {
-            store.savePublication(new Models.Publication(result.runId(), head, number(root, "check_run", "id"), null));
+        if (result.runId() != null) {
+            store.seedPublication(new Models.Publication(result.runId(), head, number(root, "check_run", "id"), null));
         }
         return result;
     }

@@ -36,7 +36,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 
 @Component
-@Profile("worker")
+@Profile({"worker", "publication-inspect"})
 public class GitHubClient implements RepositoryArchiveSource {
     public static final String SUMMARY_MARKER = "<!-- codelens-ai:summary -->";
     private static final Pattern WINDOWS_DRIVE = Pattern.compile("^[A-Za-z]:");
@@ -46,15 +46,21 @@ public class GitHubClient implements RepositoryArchiveSource {
     private final HttpClient http;
     private final String baseUrl;
     private final Map<Long, CachedToken> tokens = new ConcurrentHashMap<>();
+    private volatile CachedBot bot;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public GitHubClient(RuntimeConfig config, ObjectMapper json) {
+        this(config, json, HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build());
+    }
+
+    GitHubClient(RuntimeConfig config, ObjectMapper json, HttpClient http) {
         if (config.githubAppId().isBlank() || config.githubPrivateKey().isBlank()) {
             throw new IllegalArgumentException("GITHUB_APP_ID and GITHUB_PRIVATE_KEY are required by the worker");
         }
         this.appId = config.githubAppId();
         this.privateKey = parsePrivateKey(config.githubPrivateKey());
         this.json = json;
-        this.http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
+        this.http = http;
         this.baseUrl = "https://api.github.com";
     }
 
@@ -160,20 +166,76 @@ public class GitHubClient implements RepositoryArchiveSource {
     }
 
     public String currentHead(long installationId, String owner, String repo, int number) {
+        return currentRevision(installationId, owner, repo, number).headSha();
+    }
+
+    public Models.PullRequestRevision currentRevision(long installationId, String owner, String repo, int number) {
         JsonNode pull = request(installationId, "GET", repoPath(owner, repo) + "/pulls/" + number, null, JsonNode.class);
-        return pull.path("head").path("sha").asText();
+        return new Models.PullRequestRevision(pull.path("base").path("sha").asText(), pull.path("head").path("sha").asText());
     }
 
     public long startCheck(long installationId, String owner, String repo, String headSha, Long existing) {
+        return startCheck(installationId, owner, repo, headSha, existing, null);
+    }
+
+    public long startCheck(long installationId, String owner, String repo, String headSha, Long existing, String externalId) {
         String root = repoPath(owner, repo);
+        var body = new java.util.LinkedHashMap<String, Object>();
+        body.put("status", "in_progress");
+        body.put("started_at", Instant.now().toString());
+        if (externalId != null) body.put("external_id", externalId);
         if (existing != null) {
-            request(installationId, "PATCH", root + "/check-runs/" + existing,
-                    Map.of("status", "in_progress", "started_at", Instant.now().toString()), JsonNode.class);
+            request(installationId, "PATCH", root + "/check-runs/" + existing, body, JsonNode.class);
             return existing;
         }
+        body.put("name", "CodeLens AI Review");
+        body.put("head_sha", headSha);
         JsonNode result = request(installationId, "POST", root + "/check-runs",
-                Map.of("name", "CodeLens AI Review", "head_sha", headSha, "status", "in_progress", "started_at", Instant.now().toString()), JsonNode.class);
-        return result.path("id").asLong();
+                body, JsonNode.class);
+        return publicationId(result, "POST", root + "/check-runs");
+    }
+
+    public Optional<Long> findReviewCheck(Models.ReviewJob job, String externalId, Runnable beforeRead) {
+        Long found = null;
+        String root = repoPath(job.owner(), job.repo()) + "/commits/" + encode(job.headSha())
+                + "/check-runs?filter=all&check_name=" + encode("CodeLens AI Review") + "&per_page=100&page=";
+        for (int page = 1; page <= 20; page++) {
+            beforeRead.run();
+            JsonNode batch = request(job.installationId(), "GET", root + page, null, JsonNode.class).path("check_runs");
+            if (!batch.isArray() || batch.size() > 100) throw checkConflict("Invalid check listing");
+            for (JsonNode check : batch) {
+                if (!externalId.equals(check.path("external_id").asText())) continue;
+                // Same external ID on a foreign App is not evidence of our publication.
+                if (!appId.equals(check.path("app").path("id").asText())) continue;
+                validateCheck(check, job, externalId);
+                long id = publicationId(check, "GET", root + page);
+                if (found != null) throw checkConflict("Multiple matching Check Runs");
+                found = id;
+            }
+            if (batch.size() < 100) return Optional.ofNullable(found);
+        }
+        throw checkConflict("Check listing pagination budget exhausted");
+    }
+
+    public JsonNode getReviewCheck(Models.ReviewJob job, long id, String externalId) {
+        JsonNode check = request(job.installationId(), "GET", repoPath(job.owner(), job.repo()) + "/check-runs/" + id,
+                null, JsonNode.class);
+        validateCheck(check, job, externalId);
+        if (check.path("id").asLong() != id) throw checkConflict("Check ID mismatch");
+        return check;
+    }
+
+    private void validateCheck(JsonNode check, Models.ReviewJob job, String externalId) {
+        if (!appId.equals(check.path("app").path("id").asText())
+                || !job.headSha().equals(check.path("head_sha").asText())
+                || !"CodeLens AI Review".equals(check.path("name").asText())
+                || (externalId != null && !externalId.equals(check.path("external_id").asText()))) {
+            throw checkConflict("Check ownership or revision mismatch");
+        }
+    }
+
+    private static PublicationUncertainException checkConflict(String detail) {
+        return new PublicationUncertainException("RECONCILE", "check-runs", new IllegalStateException(detail));
     }
 
     public void completeCheck(long installationId, String owner, String repo, long checkId,
@@ -187,22 +249,129 @@ public class GitHubClient implements RepositoryArchiveSource {
                 Map.of("status", "completed", "conclusion", conclusion, "completed_at", Instant.now().toString(), "output", output), JsonNode.class);
     }
 
+    public List<Models.Annotation> getReviewAnnotations(Models.ReviewJob job, long id, Runnable beforeRead) {
+        beforeRead.run();
+        JsonNode items = request(job.installationId(), "GET", repoPath(job.owner(), job.repo()) + "/check-runs/" + id
+                + "/annotations?per_page=100&page=1", null, JsonNode.class);
+        if (!items.isArray() || items.size() > 50) throw checkConflict("Unexpected annotation count");
+        List<Models.Annotation> result = new ArrayList<>();
+        for (JsonNode item : items) {
+            if (!item.path("path").isTextual() || !item.path("start_line").isIntegralNumber()
+                    || !item.path("end_line").isIntegralNumber() || !item.path("message").isTextual()
+                    || item.hasNonNull("start_column") || item.hasNonNull("end_column")) throw checkConflict("Unsupported annotation shape");
+            result.add(new Models.Annotation(item.path("path").asText(), item.path("start_line").asInt(),
+                    item.path("end_line").asInt(), item.path("annotation_level").asText(), item.path("title").asText(""),
+                    item.path("message").asText(), item.path("raw_details").asText("")));
+        }
+        return List.copyOf(result);
+    }
+
     public long upsertSummaryComment(long installationId, String owner, String repo, int pullNumber, String body, Long existing) {
-        String root = repoPath(owner, repo);
-        String fullBody = SUMMARY_MARKER + "\n" + body;
-        Long commentId = existing;
-        if (commentId == null) {
-            List<JsonNode> comments = request(installationId, "GET", root + "/issues/" + pullNumber + "/comments?per_page=100", null,
-                    new TypeReference<List<JsonNode>>() {});
-            commentId = comments.stream().filter(item -> item.path("body").asText().contains(SUMMARY_MARKER))
-                    .map(item -> item.path("id").asLong()).findFirst().orElse(null);
+        Models.ReviewJob job = new Models.ReviewJob("legacy", installationId, owner, repo, pullNumber, "unknown", "unknown");
+        Long target = existing == null ? findSummaryComment(job, null, () -> {}).orElse(null) : existing;
+        return writeSummaryComment(job, SUMMARY_MARKER + "\n" + body, target, () -> {});
+    }
+
+    public Optional<Long> findSummaryComment(Models.ReviewJob job, String exactBody, Runnable beforeRead) {
+        CachedBot author = botIdentity(job.installationId(), beforeRead);
+        Long found = null;
+        int ownedSummaries = 0;
+        String root = repoPath(job.owner(), job.repo()) + "/issues/" + job.pullNumber() + "/comments?per_page=100&page=";
+        for (int page = 1; page <= 20; page++) {
+            beforeRead.run();
+            JsonNode comments = request(job.installationId(), "GET", root + page, null, JsonNode.class);
+            if (!comments.isArray() || comments.size() > 100) throw checkConflict("Invalid summary comment listing");
+            for (JsonNode comment : comments) {
+                if (!summaryMarker(comment) || !ownAuthor(comment, author)) continue;
+                validateSummary(comment, job, author);
+                if (++ownedSummaries > 1) throw checkConflict("Multiple owned summary comments on this PR");
+                if (exactBody != null && !exactBody.equals(comment.path("body").asText())) continue;
+                long id = publicationId(comment, "GET", root + page);
+                if (found != null) throw checkConflict("Multiple matching summary comments");
+                found = id;
+            }
+            if (comments.size() < 100) return Optional.ofNullable(found);
         }
-        if (commentId != null) {
-            request(installationId, "PATCH", root + "/issues/comments/" + commentId, Map.of("body", fullBody), JsonNode.class);
-            return commentId;
+        throw checkConflict("Summary comment pagination budget exhausted");
+    }
+
+    public JsonNode getSummaryComment(Models.ReviewJob job, long id, Runnable beforeRead) {
+        CachedBot author = botIdentity(job.installationId(), beforeRead);
+        beforeRead.run();
+        JsonNode comment = request(job.installationId(), "GET", repoPath(job.owner(), job.repo()) + "/issues/comments/" + id,
+                null, JsonNode.class);
+        validateSummary(comment, job, author);
+        if (publicationId(comment, "GET", "summary-comment") != id) throw checkConflict("Summary comment ID mismatch");
+        return comment;
+    }
+
+    public long writeSummaryComment(Models.ReviewJob job, String fullBody, Long existing, Runnable beforeRead) {
+        String root = repoPath(job.owner(), job.repo());
+        if (existing != null) getSummaryComment(job, existing, beforeRead);
+        beforeRead.run();
+        String method = existing == null ? "POST" : "PATCH";
+        String path = existing == null ? root + "/issues/" + job.pullNumber() + "/comments" : root + "/issues/comments/" + existing;
+        JsonNode response = request(job.installationId(), method, path, Map.of("body", fullBody), JsonNode.class);
+        long id = publicationId(response, method, path);
+        if (existing != null && id != existing) throw checkConflict("Summary update returned another ID");
+        return id;
+    }
+
+    private static boolean summaryMarker(JsonNode comment) {
+        return comment.path("body").asText().startsWith(SUMMARY_MARKER + "\n");
+    }
+
+    private static boolean ownAuthor(JsonNode comment, CachedBot author) {
+        JsonNode user = comment.path("user");
+        return user.path("id").asLong(-1) == author.id() && "Bot".equals(user.path("type").asText())
+                && author.login().equalsIgnoreCase(user.path("login").asText());
+    }
+
+    private void validateSummary(JsonNode comment, Models.ReviewJob job, CachedBot author) {
+        String issue = baseUrl + repoPath(job.owner(), job.repo()) + "/issues/" + job.pullNumber();
+        if (!summaryMarker(comment) || !ownAuthor(comment, author) || !issue.equalsIgnoreCase(comment.path("issue_url").asText())) {
+            throw checkConflict("Summary author, marker or PR ownership mismatch");
         }
-        JsonNode created = request(installationId, "POST", root + "/issues/" + pullNumber + "/comments", Map.of("body", fullBody), JsonNode.class);
-        return created.path("id").asLong();
+    }
+
+    private CachedBot botIdentity(long installationId, Runnable beforeRead) {
+        CachedBot cached = bot;
+        if (cached != null && cached.expiresAt().isAfter(Instant.now())) return cached;
+        try {
+            beforeRead.run();
+            HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + "/app")).timeout(Duration.ofSeconds(30))
+                    .header("Authorization", "Bearer " + appJwt()).header("Accept", "application/vnd.github+json")
+                    .header("X-GitHub-Api-Version", "2022-11-28").GET().build();
+            HttpResponse<byte[]> response = http.send(request, HttpResponse.BodyHandlers.ofByteArray());
+            if (response.statusCode() != 200) throw checkConflict("Could not verify authenticated App");
+            JsonNode app = json.readTree(response.body());
+            String slug = app.path("slug").asText();
+            if (!appId.equals(app.path("id").asText()) || !slug.matches("[A-Za-z0-9-]+")) throw checkConflict("Authenticated App identity mismatch");
+            String login = slug + "[bot]";
+            beforeRead.run();
+            JsonNode user = request(installationId, "GET", "/users/" + encode(login), null, JsonNode.class);
+            long id = publicationId(user, "GET", "app-bot");
+            if (!login.equalsIgnoreCase(user.path("login").asText()) || !"Bot".equals(user.path("type").asText())) {
+                throw checkConflict("App bot identity mismatch");
+            }
+            bot = new CachedBot(id, login, Instant.now().plusSeconds(600));
+            return bot;
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw checkConflict("App identity read interrupted");
+        } catch (IOException exception) { throw checkConflict("App identity read failed"); }
+        catch (RuntimeException exception) { throw exception; }
+        catch (Exception exception) { throw checkConflict("Could not authenticate App identity"); }
+    }
+
+    private record CachedBot(long id, String login, Instant expiresAt) {}
+
+    private static long publicationId(JsonNode response, String method, String path) {
+        JsonNode id = response.path("id");
+        if (!id.isIntegralNumber() || !id.canConvertToLong() || id.asLong() <= 0) {
+            throw new PublicationUncertainException(method, path, new IllegalStateException("Publication response omitted a valid remote ID"));
+        }
+        return id.asLong();
     }
 
     public static String repositoryFilePath(String value) {
@@ -235,26 +404,45 @@ public class GitHubClient implements RepositoryArchiveSource {
         byte[] encoded;
         try { encoded = body == null ? new byte[0] : json.writeValueAsBytes(body); }
         catch (Exception exception) { throw new IllegalStateException(exception); }
+        boolean readOnly = method.equals("GET") || method.equals("HEAD");
+        int attempts = readOnly ? 3 : 1;
         RuntimeException last = null;
-        for (int attempt = 0; attempt < 3; attempt++) {
+        for (int attempt = 0; attempt < attempts; attempt++) {
+            // Token acquisition cannot mutate a review; keep it outside the uncertain-send boundary.
+            String token = installationToken(installationId);
+            HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(baseUrl + path)).timeout(Duration.ofSeconds(30))
+                    .header("Authorization", "Bearer " + token)
+                    .header("Accept", "application/vnd.github+json")
+                    .header("X-GitHub-Api-Version", "2022-11-28");
+            if (body == null) builder.method(method, HttpRequest.BodyPublishers.noBody());
+            else builder.header("Content-Type", "application/json").method(method, HttpRequest.BodyPublishers.ofByteArray(encoded));
+            HttpResponse<byte[]> response;
             try {
-                HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(baseUrl + path)).timeout(Duration.ofSeconds(30))
-                        .header("Authorization", "Bearer " + installationToken(installationId))
-                        .header("Accept", "application/vnd.github+json")
-                        .header("X-GitHub-Api-Version", "2022-11-28");
-                if (body == null) builder.method(method, HttpRequest.BodyPublishers.noBody());
-                else builder.header("Content-Type", "application/json").method(method, HttpRequest.BodyPublishers.ofByteArray(encoded));
-                HttpResponse<byte[]> response = http.send(builder.build(), HttpResponse.BodyHandlers.ofByteArray());
-                if (response.statusCode() >= 200 && response.statusCode() < 300) return decoder.apply(response.body());
-                last = new IllegalStateException("GitHub " + method + " " + path + ": status " + response.statusCode() + ": "
-                        + new String(response.body(), StandardCharsets.UTF_8));
-                if (response.statusCode() != 429 && response.statusCode() < 500) throw last;
+                response = http.send(builder.build(), HttpResponse.BodyHandlers.ofByteArray());
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
+                if (!readOnly) throw new PublicationUncertainException(method, path, exception);
                 throw new IllegalStateException("GitHub request interrupted", exception);
-            } catch (Exception exception) {
-                last = exception instanceof RuntimeException runtime ? runtime : new IllegalStateException(exception);
+            } catch (IOException | RuntimeException exception) {
+                if (!readOnly) throw new PublicationUncertainException(method, path, exception);
+                last = new IllegalStateException("GitHub read failed", exception);
+                response = null;
             }
+            if (response != null) {
+                int status = response.statusCode();
+                if (status >= 200 && status < 300) {
+                    try { return decoder.apply(response.body()); }
+                    catch (RuntimeException exception) {
+                        if (!readOnly) throw new PublicationUncertainException(method, path, exception);
+                        throw exception;
+                    }
+                }
+                // Do not log remote bodies: they may contain repository content or secrets.
+                last = new IllegalStateException("GitHub " + method + " " + path + ": status " + status);
+                if (!readOnly && status >= 500) throw new PublicationUncertainException(method, path, last);
+                if (!readOnly || (status != 429 && status < 500)) throw last;
+            }
+            if (attempt + 1 == attempts) break;
             try { Thread.sleep((1L << attempt) * 500); }
             catch (InterruptedException exception) { Thread.currentThread().interrupt(); throw new IllegalStateException(exception); }
         }

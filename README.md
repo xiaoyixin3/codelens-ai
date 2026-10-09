@@ -107,7 +107,27 @@ the explicit `legacy:go:*` commands for rollback comparison only. TypeScript
 remains for the benchmark workbench, lifecycle operations, compatibility tests,
 and the explicit `legacy:*` rollback path; neither is part of the default API or worker.
 
-## Local setup
+## Read-only local Java review
+
+For a local-only workflow, install Java 17+, Maven, Node.js 24+, and Git, then run:
+
+```bash
+npm ci
+npm run review:local
+```
+
+Open `http://127.0.0.1:4310`, choose a local Git repository and two commits,
+then inspect behavior changes, source evidence, impact relationships, and reuse
+candidates. This entrypoint requires no GitHub App, database, Docker, tunnel,
+model key, or manual labels. It analyzes committed Java source without executing
+the input repository's builds or modifying its files. Coverage gaps and unresolved
+relationships remain explicit; suggested plans are not verified fixes.
+
+See [local review instructions](docs/local-review.md) and the
+[semantic correctness and bounded performance evidence](docs/evidence/semantic-correctness-fix-2026-10-07.md).
+Local usability and engineering regressions do not close the independent Phase 0/1 gates.
+
+## Local setup for GitHub integration
 
 ```bash
 npm install

@@ -1,6 +1,9 @@
 package ai.codelens.semantic;
 
 import ai.codelens.contracts.Models;
+import ai.codelens.review.TestReviewGuard;
+import ai.codelens.review.ReviewExecutionGuard;
+import ai.codelens.store.LeaseLostException;
 import ai.codelens.workspace.GitHubRepositoryWorkspace;
 import ai.codelens.workspace.RepositoryArchiveSource;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -27,6 +30,21 @@ class SemanticReviewServiceTest {
     private static final String HEAD = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
     @Test
+    void doesNotConvertLostLeaseIntoAnApparentlyUsableFallback() throws Exception {
+        Map<String, byte[]> archives = Map.of(BASE, zip("owner-repo-base", repository("return 1;")),
+                HEAD, zip("owner-repo-head", repository("return 2;")));
+        Path root = temporary.resolve("lost-lease");
+        SemanticReviewService service = service(true, source(archives), root);
+        ReviewExecutionGuard guard = new ReviewExecutionGuard() {
+            public void check() {}
+            public void write(Runnable action) { throw new LeaseLostException(); }
+        };
+        org.junit.jupiter.api.Assertions.assertThrows(LeaseLostException.class,
+                () -> service.analyze(99, job(), pull(), guard));
+        try (var children = Files.list(root)) { assertEquals(0, children.count()); }
+    }
+
+    @Test
     void discoversUnchangedCallersAndTestsThroughTheProductionS1Path() throws Exception {
         Map<String, String> base = repository("return 1;");
         Map<String, String> head = repository("return 2;");
@@ -35,7 +53,7 @@ class SemanticReviewServiceTest {
         SemanticReviewService service = service(true, source(archives), workspaceRoot);
         Models.PullRequest pull = pull();
 
-        SemanticReviewService.Result result = service.analyze(99, job(), pull);
+        SemanticReviewService.Result result = service.analyze(99, job(), pull, TestReviewGuard.INSTANCE);
 
         assertTrue(result.attempted());
         assertTrue(result.applied());
@@ -61,7 +79,7 @@ class SemanticReviewServiceTest {
         AtomicInteger downloads = new AtomicInteger();
         RepositoryArchiveSource unused = (installation, owner, repository, sha, destination, maxBytes) -> downloads.incrementAndGet();
         SemanticReviewService disabled = service(false, unused, temporary.resolve("disabled"));
-        SemanticReviewService.Result skipped = disabled.analyze(99, job(), pull());
+        SemanticReviewService.Result skipped = disabled.analyze(99, job(), pull(), TestReviewGuard.INSTANCE);
         assertFalse(skipped.attempted());
         assertFalse(skipped.applied());
         assertEquals(0, downloads.get());
@@ -73,14 +91,14 @@ class SemanticReviewServiceTest {
                         new ObjectMapper().findAndRegisterModules()), new BuildModelDetector());
         SemanticReviewService notAllowlisted = new SemanticReviewService(true, java.util.Set.of(), workspace, indexes,
                 (reviewRunId, repositoryId, base, head, impact, coverage, reuse) -> { });
-        assertFalse(notAllowlisted.analyze(99, job(), pull()).attempted());
+        assertFalse(notAllowlisted.analyze(99, job(), pull(), TestReviewGuard.INSTANCE).attempted());
         assertEquals(0, downloads.get());
 
         RepositoryArchiveSource failing = (installation, owner, repository, sha, destination, maxBytes) -> {
             throw new IllegalStateException("untrusted remote detail must not be published");
         };
         SemanticReviewService enabled = service(true, failing, temporary.resolve("failing"));
-        SemanticReviewService.Result fallback = enabled.analyze(99, job(), pull());
+        SemanticReviewService.Result fallback = enabled.analyze(99, job(), pull(), TestReviewGuard.INSTANCE);
         assertTrue(fallback.attempted());
         assertFalse(fallback.applied());
         assertEquals("semantic_materialization_failed", fallback.reason());
@@ -93,7 +111,7 @@ class SemanticReviewServiceTest {
                 (reviewRunId, repositoryId, base, head, impact, coverage, reuse) -> {
                     throw new IllegalStateException("database unavailable");
                 });
-        SemanticReviewService.Result auditFallback = auditFailure.analyze(99, job(), pull());
+        SemanticReviewService.Result auditFallback = auditFailure.analyze(99, job(), pull(), TestReviewGuard.INSTANCE);
         assertFalse(auditFallback.applied());
         assertEquals("semantic_index_failed", auditFallback.reason());
         assertEquals("S1", auditFallback.executionLevel());

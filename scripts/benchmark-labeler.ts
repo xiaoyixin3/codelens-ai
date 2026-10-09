@@ -2,6 +2,7 @@ import { lstat, mkdir, readFile, readdir, rename, stat, writeFile } from 'node:f
 import path from 'node:path';
 import Fastify from 'fastify';
 import { z } from 'zod';
+import { analyzeLocalReview } from './local-review.js';
 import {
   buildNeutralChangeBrief,
   computeReviewContextBundleDigest,
@@ -49,6 +50,10 @@ const args = process.argv.slice(2);
 const readArg = (name: string, fallback: string): string =>
   args.find((arg) => arg.startsWith(`${name}=`))?.slice(name.length + 1) ?? fallback;
 const root = process.cwd();
+const localMode = process.argv.includes('--local');
+let localRepository = '';
+let localDirty = false;
+let localBusy = false;
 const inputPath = path.resolve(root, readArg('--input', 'benchmarks/candidates/public-prs.jsonl'));
 const decisionsPath = path.resolve(root, readArg('--decisions', 'benchmarks/candidates/review-reasoning-decisions.json'));
 const legacyDecisionsPath = path.resolve(root, readArg('--legacy-decisions', 'benchmarks/candidates/blind-review-decisions.json'));
@@ -64,6 +69,7 @@ if (!Number.isInteger(port) || port < 1 || port > 65_535) {
 }
 if (requestedMode !== 'gold' && requestedMode !== 'assisted') throw new Error('--mode must be gold or assisted.');
 const mode: 'gold' | 'assisted' = requestedMode;
+if (localMode && mode !== 'assisted') throw new Error('Local use must be assisted; it cannot become formal gold.');
 
 const LegacyExpectedFindingInputSchema = z.object({
   ruleId: z.string().trim().min(1).max(120),
@@ -102,6 +108,7 @@ async function readCases(): Promise<ReplayCase[]> {
 }
 
 async function readDecisions(): Promise<ReviewWorkbenchStore> {
+  if (localMode) return { version: 3, protocol: 'reasoning-v1', mode, updatedAt: new Date().toISOString(), decisions: {} };
   try {
     const source = JSON.parse(await readFile(decisionsPath, 'utf8')) as unknown;
     const parsed = ReviewWorkbenchStoreSchema.parse(source);
@@ -116,6 +123,7 @@ async function readDecisions(): Promise<ReviewWorkbenchStore> {
 }
 
 async function readLegacyDecisions(): Promise<LegacyDecisionStore> {
+  if (localMode) return { version: 2, protocol: 'blind-v1', updatedAt: new Date().toISOString(), decisions: {} };
   try {
     const source = JSON.parse(await readFile(legacyDecisionsPath, 'utf8')) as unknown;
     return z.object({
@@ -257,9 +265,9 @@ function validateRootCauses(item: ReplayCase, bundle: ReviewContextBundle | unde
   return undefined;
 }
 
-const cases = await readCases();
+const cases = localMode ? [] as ReplayCase[] : await readCases();
 const caseById = new Map(cases.map((item) => [item.id, item]));
-const contextBundles = await readContextBundles();
+const contextBundles = localMode ? new Map<string, ReviewContextBundle>() : await readContextBundles();
 for (const bundle of contextBundles.values()) {
   const item = caseById.get(bundle.caseId);
   if (!item) throw new Error(`Context bundle references an unknown case: ${bundle.caseId}`);
@@ -269,7 +277,7 @@ for (const bundle of contextBundles.values()) {
 }
 const suggestions = new Map<string, Awaited<ReturnType<DeterministicRiskReviewer['review']>>>();
 
-if (mode === 'assisted') {
+if (mode === 'assisted' && !localMode) {
   const reviewer = new DeterministicRiskReviewer();
   const verifier = new EvidenceVerifier({ maxPublished: 100 });
   for (const item of cases) {
@@ -331,6 +339,9 @@ app.get('/api/state', async () => {
   return {
     protocol: 'reasoning-v1',
     mode,
+    localMode,
+    localRepository,
+    localDirty,
     generatedAt: new Date().toISOString(),
     inputPath: relative(inputPath),
     outputPath: relative(outputPath),
@@ -343,7 +354,7 @@ app.get('/api/state', async () => {
       contextReady: cases.filter((item) => contextBundles.has(item.id)).length
     },
     cases: cases.map((item) => {
-      if (item.provenance.kind !== 'historical_pr') {
+      if (!localMode && item.provenance.kind !== 'historical_pr') {
         throw new Error(`Labeler only accepts historical PR cases: ${item.id}`);
       }
       const decision = store.decisions[item.id];
@@ -352,9 +363,9 @@ app.get('/api/state', async () => {
       const result: Record<string, unknown> = {
         id: item.id,
         ...item.context,
-        sourceUrl: item.provenance.sourceUrl,
-        repositoryLicense: item.provenance.repositoryLicense,
-        collectedAt: item.provenance.collectedAt,
+        sourceUrl: item.provenance.kind === 'historical_pr' ? item.provenance.sourceUrl : '',
+        repositoryLicense: item.provenance.kind === 'historical_pr' ? item.provenance.repositoryLicense : 'local only',
+        collectedAt: item.provenance.kind === 'historical_pr' ? item.provenance.collectedAt : bundle?.generatedAt,
         changeBrief,
         contextPacket: bundle ? {
           available: true,
@@ -382,6 +393,7 @@ app.get('/api/state', async () => {
 });
 
 app.put<{ Params: { id: string } }>('/api/decisions/:id', async (request, reply) => {
+  if (localMode) return reply.code(403).send({ error: 'Local reviews cannot write formal labels.' });
   const item = caseById.get(request.params.id);
   if (!item) return reply.code(404).send({ error: 'Benchmark case was not found.' });
   const parsed = DecisionInputSchema.safeParse(request.body);
@@ -428,6 +440,7 @@ app.post('/api/reuse/options', async (request, reply) => {
 });
 
 app.post('/api/export', async (request, reply) => {
+  if (localMode) return reply.code(403).send({ error: 'Local reviews cannot export formal labels.' });
   const parsed = ExportInputSchema.safeParse(request.body);
   if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid reviewer.' });
   const store = await readDecisions();
@@ -455,6 +468,25 @@ app.post('/api/export', async (request, reply) => {
   });
   await atomicWrite(outputPath, `${exported.map((item) => JSON.stringify(item)).join('\n')}\n`);
   return { exported: exported.length, outputPath: relative(outputPath) };
+});
+
+app.post('/api/local/review', async (request, reply) => {
+  if (!localMode) return reply.code(404).send({ error: 'Local entry is disabled.' });
+  if (localBusy) return reply.code(409).send({ error: '已有分析正在运行，请稍后再试。' });
+  localBusy = true;
+  try {
+    const result = await analyzeLocalReview(request.body);
+    const brief = buildNeutralChangeBrief(result.item, result.bundle);
+    retrieveReuseCandidates(brief, result.bundle);
+    cases.splice(0, cases.length, result.item);
+    caseById.clear(); caseById.set(result.item.id, result.item);
+    contextBundles.clear(); contextBundles.set(result.item.id, result.bundle);
+    localRepository = result.repository; localDirty = result.dirty;
+    return { id: result.item.id };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '本地分析失败';
+    return reply.code(400).send({ error: message.includes('ENOENT') ? '未找到 Java / Git 或已构建的 JAR，请运行本地启动脚本。' : message.slice(0, 1200) });
+  } finally { localBusy = false; }
 });
 
 app.get('/*', async (request, reply) => {

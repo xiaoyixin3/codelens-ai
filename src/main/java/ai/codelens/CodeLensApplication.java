@@ -14,7 +14,15 @@ public class CodeLensApplication {
     public static void main(String[] args) {
         DotEnv.load(".env");
         String mode = System.getProperty("codelens.mode", DotEnv.get("CODELENS_MODE", "api")).trim().toLowerCase();
+        if (mode.equals("publication-inspect")) {
+            ai.codelens.review.PublicationInspectionRunner.runId(new org.springframework.boot.DefaultApplicationArguments(args));
+        }
         SpringApplication application = new SpringApplication(CodeLensApplication.class);
+        application.addInitializers(context -> {
+            if (context.getEnvironment().acceptsProfiles(org.springframework.core.env.Profiles.of("publication-inspect"))) {
+                ai.codelens.review.PublicationInspectionRunner.requireReadOnlyProfiles(context.getEnvironment().getActiveProfiles());
+            }
+        });
         if (!mode.equals("api")) {
             application.setWebApplicationType(WebApplicationType.NONE);
         }

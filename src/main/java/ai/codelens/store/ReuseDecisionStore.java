@@ -2,6 +2,8 @@ package ai.codelens.store;
 
 import ai.codelens.semantic.ReuseDecisionService;
 import ai.codelens.semantic.SemanticReusePlanner;
+import ai.codelens.semantic.LocalPatchPreview;
+import ai.codelens.semantic.SemanticModels;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.context.annotation.Profile;
 import org.springframework.dao.EmptyResultDataAccessException;
@@ -18,7 +20,7 @@ import java.util.UUID;
 /** Persists append-only, provenance-bound reuse decisions and their selected option. */
 @Repository
 @Profile("api")
-public final class ReuseDecisionStore {
+public class ReuseDecisionStore {
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
     private final ObjectMapper json;
@@ -34,6 +36,69 @@ public final class ReuseDecisionStore {
         SemanticReusePlanner.Investigation investigation = investigation(installationId, reviewRunId, false);
         StoredDecision decision = current(installationId, reviewRunId);
         return new PlanningView(investigation, decision == null ? 0 : decision.revision(), decision);
+    }
+
+    /** One bounded read snapshot. Never hold it while parsing source or generating a preview. */
+    public LocalPatchPreview.Context previewContext(long installationId, String reviewRunId,
+                                                    String decisionId, int revision, List<String> paths) {
+        if(installationId<1 || revision<1 || paths==null || paths.isEmpty() || paths.size()>3) {
+            throw new IllegalArgumentException("preview_identity_or_file_limit");
+        }
+        UUID.fromString(reviewRunId); UUID.fromString(decisionId); paths.forEach(LocalPatchPreview::safePath);
+        var read=new TransactionTemplate(transactions.getTransactionManager());
+        read.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        read.setIsolationLevel(org.springframework.transaction.TransactionDefinition.ISOLATION_REPEATABLE_READ);
+        read.setReadOnly(true); read.setTimeout(5);
+        return read.execute(status->{
+            jdbc.execute("SET LOCAL statement_timeout='4s'");
+            var view=get(installationId,reviewRunId); var stored=view.currentDecision();
+            if(stored==null || !stored.id().equals(decisionId) || stored.revision()!=revision) {
+                throw new DecisionConflictException("approved_decision_changed_or_missing");
+            }
+            var decision=LocalPatchPreview.validated(view); var provenance=decision.provenance();
+            if(paths.stream().anyMatch(path->!decision.selectedOption().expectedFiles().contains(path))) {
+                throw new IllegalArgumentException("preview_file_outside_approved_option");
+            }
+            var row=jdbc.queryForMap("""
+                    SELECT run.base_sha,run.head_sha,head.id::text AS snapshot_id,
+                      base.commit_sha AS indexed_base,head.commit_sha AS indexed_head,
+                      base.adapter_version AS base_adapter,head.adapter_version AS head_adapter,
+                      base.build_model_hash AS base_model,head.build_model_hash AS head_model
+                    FROM review_runs run
+                    JOIN github_repositories repository ON repository.id=run.github_repository_id
+                    JOIN github_installations installation ON installation.id=repository.installation_id
+                    JOIN semantic_review_analyses analysis ON analysis.review_run_id=run.id
+                    JOIN repository_snapshots base ON base.id=analysis.base_snapshot_id AND base.status='ready'
+                    JOIN repository_snapshots head ON head.id=analysis.head_snapshot_id AND head.status='ready'
+                    WHERE run.id=?::uuid AND repository.installation_id=? AND repository.selected=true
+                      AND installation.active=true AND run.status='completed'
+                      AND base.github_repository_id=repository.id AND head.github_repository_id=repository.id
+                      AND NOT EXISTS (SELECT 1 FROM review_runs newer WHERE newer.github_repository_id=run.github_repository_id
+                        AND newer.pull_number=run.pull_number AND (newer.created_at,newer.id)>(run.created_at,run.id))
+                    """,reviewRunId,installationId);
+            if(!provenance.baseSha().equals(row.get("base_sha")) || !provenance.headSha().equals(row.get("head_sha"))
+                    || !provenance.baseSha().equals(row.get("indexed_base")) || !provenance.headSha().equals(row.get("indexed_head"))
+                    || !provenance.adapterVersion().equals(row.get("base_adapter")) || !provenance.adapterVersion().equals(row.get("head_adapter"))
+                    || !provenance.baseBuildModelHash().equals(row.get("base_model")) || !provenance.headBuildModelHash().equals(row.get("head_model"))) {
+                throw new DecisionConflictException("preview_index_provenance_changed");
+            }
+            List<LocalPatchPreview.FileContext> files=new java.util.ArrayList<>();
+            for(String path:paths) {
+                String hash=jdbc.queryForObject("""
+                        SELECT content_hash FROM semantic_index_files WHERE snapshot_id=?::uuid AND path=?
+                        AND status='indexed' AND language='java'
+                        """,String.class,row.get("snapshot_id"),path);
+                if(hash==null || !hash.matches("[0-9a-f]{64}")) throw new DecisionConflictException("preview_indexed_source_required");
+                var symbols=jdbc.query("""
+                        SELECT stable_key,kind,qualified_name,signature,path,start_line,end_line,test_source,type_resolved
+                        FROM semantic_symbols WHERE snapshot_id=?::uuid AND path=? ORDER BY start_line,stable_key LIMIT 201
+                        """,(result,ignored)->new SemanticModels.Symbol(result.getString(1),SemanticModels.SymbolKind.valueOf(result.getString(2)),
+                        result.getString(3),result.getString(4),result.getString(5),result.getInt(6),result.getInt(7),result.getBoolean(8),result.getBoolean(9)),row.get("snapshot_id"),path);
+                if(symbols.size()>200) throw new IllegalArgumentException("preview_symbol_context_limit");
+                files.add(new LocalPatchPreview.FileContext(path,hash,symbols));
+            }
+            return new LocalPatchPreview.Context(reviewRunId,provenance.baseSha(),provenance.headSha(),view,files);
+        });
     }
 
     public StoredDecision save(long installationId, String reviewRunId,

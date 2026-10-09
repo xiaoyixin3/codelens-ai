@@ -12,6 +12,7 @@ import java.util.jar.JarOutputStream;
 import javax.tools.ToolProvider;
 
 import static ai.codelens.semantic.SemanticModels.RelationType.CALLS;
+import static ai.codelens.semantic.SemanticModels.RelationType.ANNOTATED_WITH;
 import static ai.codelens.semantic.SemanticModels.RelationType.CATCHES;
 import static ai.codelens.semantic.SemanticModels.RelationType.IMPLEMENTS;
 import static ai.codelens.semantic.SemanticModels.RelationType.OVERRIDES;
@@ -443,6 +444,179 @@ class JavaSemanticAdapterTest {
                 && edge.fromStableKey().equals("java:method:example.Specialized#order(example.Marker)")
                 && edge.toStableKey().equals("java:method:example.Marker#order()")), () -> index.relationships().stream()
                 .filter(edge -> edge.sourcePath().endsWith("Specialized.java")).toList().toString());
+    }
+
+    @Test
+    void annotationEvidenceStaysInItsOwningCompilationUnitAndMatchesIncremental() throws Exception {
+        write("src/main/java/example/Marker.java", "package example; public @interface Marker {}");
+        for (String name : Set.of("First", "Second")) {
+            write("src/main/java/example/" + name + ".java", "package example; @Marker public class " + name
+                    + " { @Marker int value; @Marker public int read() { return value; } }");
+        }
+        var adapter = new JavaSemanticAdapter();
+        var model = new BuildModelDetector().detect(repository);
+        var base = adapter.index(repository, "base", model);
+        write("src/main/java/example/First.java", "package example; @Marker public class First"
+                + " { @Marker int value; @Marker public int read() { return value + 1; } }");
+        var full = adapter.index(repository, "head", model);
+        var incremental = adapter.indexIncremental(repository, "head", model, base, Set.of("src/main/java/example/First.java"));
+        var owners = full.symbols().stream().collect(java.util.stream.Collectors.toMap(SemanticModels.Symbol::stableKey, SemanticModels.Symbol::path));
+        var annotations = full.relationships().stream().filter(edge -> edge.type() == ANNOTATED_WITH).toList();
+        assertEquals(6, annotations.size(), "exactly the six declared annotation occurrences, not a cross-file product");
+        assertTrue(annotations.stream().allMatch(edge -> edge.sourcePath().equals(owners.get(edge.fromStableKey()))));
+        assertEquals(Set.copyOf(full.relationships()), Set.copyOf(incremental.relationships()));
+    }
+
+    @Test
+    void anonymousSelfCallTargetsMatchDeclaredKeysAndRemainStable() throws Exception {
+        write("src/main/java/example/AnonymousSelfCall.java", """
+                package example;
+                public class AnonymousSelfCall {
+                    public Runnable task() {
+                        return new Runnable() {
+                            boolean ready() { return true; }
+                            public void run() { if (ready()) new Receipt("ok"); }
+                        };
+                    }
+                }
+                """);
+        var adapter = new JavaSemanticAdapter();
+        var model = new BuildModelDetector().detect(repository);
+        var first = adapter.index(repository, "same", model);
+        var second = adapter.index(repository, "same", model);
+        var readyKey = first.symbols().stream().map(SemanticModels.Symbol::stableKey)
+                .filter(key -> key.contains("$anonymous@") && key.endsWith("#ready()")).findFirst().orElseThrow();
+        assertTrue(first.relationships().stream().anyMatch(edge -> edge.type() == CALLS && edge.toStableKey().equals(readyKey) && edge.typeResolved()));
+        assertFalse(first.relationships().stream().anyMatch(edge -> edge.toStableKey().matches(".*Anonymous-[0-9a-fA-F-]{36}.*")),
+                () -> first.relationships().stream().filter(edge -> edge.toStableKey().contains("Anonymous-")).toList().toString());
+        assertEquals(Set.copyOf(first.relationships()), Set.copyOf(second.relationships()));
+    }
+
+    @Test
+    void incrementalResolutionUsesRepositoryDeclarationsNotTheReviewersClasspath() throws Exception {
+        write("src/main/java/ai/codelens/intelligence/CodeIntelligenceService.java", """
+                package ai.codelens.intelligence;
+                public class CodeIntelligenceService { public int legacy(int value) { return value; } }
+                """);
+        String caller = "package example; import ai.codelens.intelligence.CodeIntelligenceService; public class ShadowClient {"
+                + " private CodeIntelligenceService service; public int run(int value) { return service.legacy(value%s); } }";
+        write("src/main/java/example/ShadowClient.java", caller.formatted(""));
+        var adapter = new JavaSemanticAdapter();
+        var model = new BuildModelDetector().detect(repository);
+        var base = adapter.index(repository, "base", model);
+        write("src/main/java/example/ShadowClient.java", caller.formatted(" + 1"));
+        var full = adapter.index(repository, "head", model);
+        var incremental = adapter.indexIncremental(repository, "head", model, base, Set.of("src/main/java/example/ShadowClient.java"));
+        assertTrue(incremental.relationships().stream().anyMatch(edge -> edge.type() == CALLS && edge.typeResolved()
+                && edge.toStableKey().equals("java:method:ai.codelens.intelligence.CodeIntelligenceService#legacy(int)")));
+        assertEquals(Set.copyOf(full.relationships()), Set.copyOf(incremental.relationships()));
+    }
+
+    @Test
+    void undeclaredReviewerLibrariesCannotBecomeTrustedRepositoryDependencies() throws Exception {
+        write("src/main/java/example/HostLibraryCaller.java", """
+                package example;
+                import org.springframework.util.StringUtils;
+                public class HostLibraryCaller { public boolean check(String value) { return StringUtils.hasText(value); } }
+                """);
+        var index = new JavaSemanticAdapter().index(repository, "head", new BuildModelDetector().detect(repository));
+        assertFalse(index.relationships().stream().anyMatch(edge -> edge.type() == CALLS && edge.typeResolved()
+                && edge.toStableKey().equals("java:method:org.springframework.util.StringUtils#hasText(java.lang.String)")));
+        assertTrue(index.relationships().stream().anyMatch(edge -> edge.type() == CALLS && !edge.typeResolved()
+                && edge.sourcePath().endsWith("HostLibraryCaller.java")));
+    }
+
+    @Test
+    void incrementalCoverageRetainsMissingDependencyDegradation() throws Exception {
+        Files.writeString(repository.resolve("pom.xml"), """
+                <project><modelVersion>4.0.0</modelVersion><dependencies>
+                  <dependency><groupId>external</groupId><artifactId>helper</artifactId><version>1.0</version></dependency>
+                </dependencies></project>
+                """);
+        var adapter = new JavaSemanticAdapter();
+        var model = new BuildModelDetector().detect(repository);
+        var base = adapter.index(repository, "base", model);
+        var head = adapter.indexIncremental(repository, "head", model, base, Set.of("src/main/java/example/OtherService.java"));
+        assertTrue(head.coverage().reusedFiles() > 0);
+        assertEquals(SemanticModels.CoverageLevel.SEMANTIC_PARTIAL, head.coverage().level());
+        assertEquals(1L, head.coverage().degradationReasons().get("dependency_cache_not_configured"));
+    }
+
+    @Test
+    void anonymousOwnersOnTheSameLineHaveDistinctSourceIdentities() throws Exception {
+        write("src/main/java/example/InlineAnonymous.java", "package example; public class InlineAnonymous {"
+                + " public Runnable first() { return new Runnable() { public void run() {} }; }"
+                + " public Runnable second() { return new Runnable() { public void run() {} }; } }");
+        var index = new JavaSemanticAdapter().index(repository, "head", new BuildModelDetector().detect(repository));
+        assertEquals(2, index.symbols().stream().filter(symbol -> symbol.stableKey().contains("InlineAnonymous$anonymous@")
+                && symbol.stableKey().endsWith("#run()")).count());
+    }
+
+    @Test
+    void oldAdapterSnapshotsAreNotReusedAfterTheCorrectnessFix() {
+        var adapter = new JavaSemanticAdapter();
+        var model = new BuildModelDetector().detect(repository);
+        var base = adapter.index(repository, "base", model);
+        var legacy = new SemanticModels.Index(base.commitSha(), "javaparser-3.28.2-v4", base.buildModelHash(),
+                base.files(), base.symbols(), base.relationships(), base.coverage());
+        var head = adapter.indexIncremental(repository, "head", model, legacy, Set.of());
+        assertEquals(0, head.coverage().reusedFiles());
+        assertEquals(adapter.version(), head.adapterVersion());
+        assertEquals(Set.copyOf(base.relationships()), Set.copyOf(head.relationships()));
+    }
+
+    @Test
+    void incrementalSymbolLookupDoesNotResurrectDeletedTargets() throws Exception {
+        var adapter = new JavaSemanticAdapter();
+        var model = new BuildModelDetector().detect(repository);
+        var base = adapter.index(repository, "base", model);
+        Files.delete(repository.resolve("src/main/java/example/PaymentService.java"));
+        var full = adapter.index(repository, "head", model);
+        var incremental = adapter.indexIncremental(repository, "head", model, base, Set.of("src/main/java/example/PaymentService.java"));
+        assertFalse(incremental.symbols().stream().anyMatch(symbol -> symbol.path().endsWith("PaymentService.java")));
+        assertEquals(Set.copyOf(full.relationships()), Set.copyOf(incremental.relationships()));
+    }
+
+    @Test
+    void completedIndexesReleaseTheLibrariesGlobalSolverCache() throws Exception {
+        var facade = com.github.javaparser.symbolsolver.javaparsermodel.JavaParserFacade.class;
+        var field = facade.getDeclaredField("instances");
+        field.setAccessible(true); // Test-only observation of the pinned library's cache lifecycle.
+        try {
+            var adapter = new JavaSemanticAdapter();
+            var model = new BuildModelDetector().detect(repository);
+            adapter.index(repository, "first", model);
+            assertTrue(((java.util.Map<?, ?>) field.get(null)).isEmpty(), "finished indexing must not retain its TypeSolver/AST graph");
+            adapter.index(repository, "second", model);
+            assertTrue(((java.util.Map<?, ?>) field.get(null)).isEmpty());
+        } finally {
+            com.github.javaparser.symbolsolver.javaparsermodel.JavaParserFacade.clearInstances();
+        }
+    }
+
+    @Test
+    void independentAdapterInstancesCanIndexWithoutSharingLiveSolverState() throws Exception {
+        var executor = java.util.concurrent.Executors.newFixedThreadPool(2);
+        var model = new BuildModelDetector().detect(repository);
+        try {
+            var first = executor.submit(() -> new JavaSemanticAdapter().index(repository, "first", model));
+            var second = executor.submit(() -> new JavaSemanticAdapter().index(repository, "second", model));
+            var a = first.get(10, java.util.concurrent.TimeUnit.SECONDS);
+            var b = second.get(10, java.util.concurrent.TimeUnit.SECONDS);
+            assertEquals(Set.copyOf(a.symbols()), Set.copyOf(b.symbols()));
+            assertEquals(Set.copyOf(a.relationships()), Set.copyOf(b.relationships()));
+        } finally { executor.shutdownNow(); }
+    }
+
+    @Test
+    void interruptedSolverSessionWaitPreservesCancellation() {
+        var model = new BuildModelDetector().detect(repository);
+        Thread.currentThread().interrupt();
+        try {
+            org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                    () -> new JavaSemanticAdapter().index(repository, "head", model));
+            assertTrue(Thread.currentThread().isInterrupted());
+        } finally { Thread.interrupted(); }
     }
 
     private static String displayCall(SemanticModels.Relationship edge) {

@@ -286,21 +286,40 @@ export type ChangeBrief = z.infer<typeof ChangeBriefSchema>;
 function unique<T>(values: T[]): T[] { return [...new Set(values)]; }
 function fileName(value: string): string { return value.split('/').at(-1) ?? value; }
 
+/** Keep existing short IDs stable; long Java signatures use a collision-resistant evidence key. */
+export function changeEvidenceId(value: string): string {
+  return value.length <= 300 ? value : `evidence:sha256:${createHash('sha256').update(value).digest('hex')}`;
+}
+
 export function buildNeutralChangeBrief(item: ReplayCase, bundle?: ReviewContextBundle): ChangeBrief {
-  const evidence: z.infer<typeof ChangeBriefEvidenceSchema>[] = [{ id: 'pr:title', kind: 'pr_title', label: item.context.title }];
-  if (item.context.body.trim()) evidence.push({ id: 'pr:body', kind: 'pr_body', label: item.context.body.trim() });
+  let presentationLimited = false;
+  const text = (value: string, maximum: number): string => {
+    if (value.length <= maximum) return value;
+    presentationLimited = true; return `${value.slice(0, maximum - 12)}…（摘要已截断）`;
+  };
+  const refs = (values: string[]): string[] => {
+    const ids = unique(values).map(changeEvidenceId);
+    if (ids.length > 100) presentationLimited = true;
+    return ids.slice(0, 100);
+  };
+  const names = (values: string[]): string[] => {
+    if (values.length > 500) presentationLimited = true;
+    return values.slice(0, 500);
+  };
+  const evidence: z.infer<typeof ChangeBriefEvidenceSchema>[] = [{ id: 'pr:title', kind: 'pr_title', label: text(item.context.title, 1000) }];
+  if (item.context.body.trim()) evidence.push({ id: 'pr:body', kind: 'pr_body', label: text(item.context.body.trim(), 1000) });
   const changedPaths = new Set(item.context.files.map((file) => file.path));
   for (const file of item.context.files) {
-    evidence.push({ id: `diff:${file.path}`, kind: 'diff', label: `${file.status}: +${file.additions} -${file.deletions}`, path: file.path });
+    evidence.push({ id: changeEvidenceId(`diff:${file.path}`), kind: 'diff', label: `${file.status}: +${file.additions} -${file.deletions}`, path: file.path });
   }
   for (const symbol of bundle?.symbols ?? []) {
-    evidence.push({ id: `symbol:${symbol.id}`, kind: 'symbol', label: `${symbol.kind} ${symbol.name}`, path: symbol.path, revision: symbol.revision, startLine: symbol.startLine, endLine: symbol.endLine });
+    evidence.push({ id: changeEvidenceId(`symbol:${symbol.id}`), kind: 'symbol', label: text(`${symbol.kind} ${symbol.name}`, 1000), path: symbol.path, revision: symbol.revision, startLine: symbol.startLine, endLine: symbol.endLine });
   }
   for (const [index, edge] of (bundle?.relationships ?? []).entries()) {
-    evidence.push({ id: `relationship:${index}`, kind: 'relationship', label: `${edge.fromSymbolId} ${edge.type} ${edge.toSymbolId}`, path: edge.evidencePath, startLine: edge.evidenceLine, endLine: edge.evidenceLine });
+    evidence.push({ id: `relationship:${index}`, kind: 'relationship', label: text(`${edge.fromSymbolId} ${edge.type} ${edge.toSymbolId}`, 1000), path: edge.evidencePath, startLine: edge.evidenceLine, endLine: edge.evidenceLine });
   }
   for (const file of bundle?.files.filter((candidate) => candidate.role === 'test') ?? []) {
-    evidence.push({ id: `test:${file.revision}:${file.path}`, kind: 'test', label: `${file.revision} test file`, path: file.path, revision: file.revision });
+    evidence.push({ id: changeEvidenceId(`test:${file.revision}:${file.path}`), kind: 'test', label: `${file.revision} test file`, path: file.path, revision: file.revision });
   }
 
   const symbolsById = new Map((bundle?.symbols ?? []).map((symbol) => [symbol.id, symbol]));
@@ -331,7 +350,7 @@ export function buildNeutralChangeBrief(item: ReplayCase, bundle?: ReviewContext
     const relatedEdges = (bundle?.relationships ?? []).map((edge, index) => ({ edge, index })).filter(({ edge }) => coreIds.has(edge.fromSymbolId) || coreIds.has(edge.toSymbolId));
     const callerEdges = relatedEdges.filter(({ edge }) => {
       const from = symbolsById.get(edge.fromSymbolId);
-      return coreIds.has(edge.toSymbolId) && from !== undefined && !groupPaths.has(from.path) && !testPathsInBundle.has(from.path);
+      return edge.type === 'calls' && coreIds.has(edge.toSymbolId) && from !== undefined && !groupPaths.has(from.path) && !testPathsInBundle.has(from.path);
     });
     const callerSymbols = callerEdges
       .map(({ edge }) => symbolsById.get(edge.fromSymbolId))
@@ -347,11 +366,11 @@ export function buildNeutralChangeBrief(item: ReplayCase, bundle?: ReviewContext
     ]);
     const baseSymbols = unique(core.filter((symbol) => symbol.revision === 'base').map((symbol) => symbol.name));
     const headSymbols = unique(core.filter((symbol) => symbol.revision === 'head').map((symbol) => symbol.name));
-    const diffEvidence = files.map((file) => `diff:${file}`);
-    const baseEvidence = core.filter((symbol) => symbol.revision === 'base').map((symbol) => `symbol:${symbol.id}`);
-    const headEvidence = core.filter((symbol) => symbol.revision === 'head').map((symbol) => `symbol:${symbol.id}`);
+    const diffEvidence = refs(files.map((file) => `diff:${file}`));
+    const baseEvidence = refs(core.filter((symbol) => symbol.revision === 'base').map((symbol) => `symbol:${symbol.id}`));
+    const headEvidence = refs(core.filter((symbol) => symbol.revision === 'head').map((symbol) => `symbol:${symbol.id}`));
     const relationshipEvidence = relatedEdges.map(({ index }) => `relationship:${index}`);
-    const callerRelationshipEvidence = callerEdges.map(({ index }) => `relationship:${index}`);
+    const callerRelationshipEvidence = refs(callerEdges.map(({ index }) => `relationship:${index}`));
     const testRelationshipEvidence = relatedEdges.filter(({ edge }) => {
       const from = symbolsById.get(edge.fromSymbolId); const to = symbolsById.get(edge.toSymbolId);
       return [from, to].some((symbol) => symbol !== undefined && testPathsInBundle.has(symbol.path));
@@ -361,12 +380,12 @@ export function buildNeutralChangeBrief(item: ReplayCase, bundle?: ReviewContext
     const deletions = item.context.files.filter((file) => groupPaths.has(file.path)).reduce((sum, file) => sum + file.deletions, 0);
     const titleSymbols = unique(headSymbols.length ? headSymbols : baseSymbols).slice(0, 2);
     const cardId = `behavior:${cardIndex + 1}`;
-    const anchorEvidence = unique([...diffEvidence, ...baseEvidence, ...headEvidence, ...relationshipEvidence, ...testEvidence]);
+    const anchorEvidence = refs([...diffEvidence, ...baseEvidence, ...headEvidence, ...relationshipEvidence, ...testEvidence]);
     const questions: z.infer<typeof GuidedReviewQuestionSchema>[] = [{
       id: `${cardId}:contract`,
       question: 'Base 到 Head 是否改变了返回值、异常、权限、数据写入或副作用契约？',
       purpose: '先比较行为契约，再判断代码写法；不能仅根据增删行作结论。',
-      evidenceIds: unique([...diffEvidence, ...baseEvidence, ...headEvidence])
+      evidenceIds: refs([...diffEvidence, ...baseEvidence, ...headEvidence])
     }, {
       id: `${cardId}:reuse`,
       question: '仓库中是否已有承担相同契约或调用角色的实现可以复用、扩展或抽取？',
@@ -379,7 +398,7 @@ export function buildNeutralChangeBrief(item: ReplayCase, bundle?: ReviewContext
     });
     if (testPaths.length) questions.push({
       id: `${cardId}:tests`, question: '现有测试覆盖的是变化后的生产入口，还是只覆盖了新增实现本身？',
-      purpose: '避免测试通过但真实调用路径未被执行。', evidenceIds: unique([...testEvidence, ...testRelationshipEvidence])
+      purpose: '避免测试通过但真实调用路径未被执行。', evidenceIds: refs([...testEvidence, ...testRelationshipEvidence])
     });
     else questions.push({
       id: `${cardId}:missing-tests`, question: '哪些生产入口应验证这个变化，但冻结上下文中没有关联测试证据？',
@@ -387,23 +406,23 @@ export function buildNeutralChangeBrief(item: ReplayCase, bundle?: ReviewContext
     });
     return {
       id: cardId,
-      title: titleSymbols.length ? titleSymbols.join(' / ') : files.map(fileName).join(' / '),
+      title: text(titleSymbols.length ? titleSymbols.join(' / ') : files.map(fileName).join(' / '), 500),
       summary: {
         text: `${files.length} 个关联变更文件，共 +${additions} / -${deletions} 行；冻结上下文连接到 ${callerSymbols.length} 个未修改调用方和 ${testPaths.length} 个测试文件。`,
         epistemicStatus: 'fact' as const,
         evidenceIds: anchorEvidence
       },
       changedFiles: files,
-      coreSymbols: unique(core.map((symbol) => symbol.name)),
-      unchangedCallers: unique(callerSymbols.map((symbol) => symbol.name)),
-      relatedTests: testPaths,
+      coreSymbols: names(unique(core.map((symbol) => symbol.name))),
+      unchangedCallers: names(unique(callerSymbols.map((symbol) => symbol.name))),
+      relatedTests: names(testPaths),
       before: [{
-        text: baseSymbols.length ? `Base 定义包含：${baseSymbols.join('、')}。` : '冻结上下文未提供这些变更文件的 Base 符号定义。',
+        text: text(baseSymbols.length ? `Base 定义包含：${baseSymbols.join('、')}。` : '冻结上下文未提供这些变更文件的 Base 符号定义。', 2000),
         epistemicStatus: baseSymbols.length ? 'fact' as const : 'unknown' as const,
         evidenceIds: baseSymbols.length ? baseEvidence : []
       }],
       after: [{
-        text: headSymbols.length ? `Head 定义包含：${headSymbols.join('、')}。` : '冻结上下文未提供这些变更文件的 Head 符号定义。',
+        text: text(headSymbols.length ? `Head 定义包含：${headSymbols.join('、')}。` : '冻结上下文未提供这些变更文件的 Head 符号定义。', 2000),
         epistemicStatus: headSymbols.length ? 'fact' as const : 'unknown' as const,
         evidenceIds: headSymbols.length ? headEvidence : []
       }],
@@ -418,7 +437,7 @@ export function buildNeutralChangeBrief(item: ReplayCase, bundle?: ReviewContext
     caseId: item.id,
     ...(bundle ? { sourcePacketId: bundle.packetId } : {}),
     intent: {
-      text: item.context.body.trim() ? `${item.context.title} — ${item.context.body.trim()}` : `${item.context.title}；PR 未提供正文，实际意图仍需确认。`,
+      text: text(item.context.body.trim() ? `${item.context.title} — ${item.context.body.trim()}` : `${item.context.title}；PR 未提供正文，实际意图仍需确认。`, 2000),
       epistemicStatus: item.context.body.trim() ? 'fact' : 'unknown',
       evidenceIds: intentEvidence
     },
@@ -428,7 +447,7 @@ export function buildNeutralChangeBrief(item: ReplayCase, bundle?: ReviewContext
       contextualFiles: bundle?.files.length ?? 0,
       indexedSymbols: bundle?.symbols.length ?? 0,
       relationships: bundle?.relationships.length ?? 0,
-      limitations: bundle?.limitations ?? ['Frozen repository context is unavailable.']
+      limitations: [...(bundle?.limitations ?? ['Frozen repository context is unavailable.']), ...(presentationLimited ? ['阅读摘要有截断：每项最多 100 条证据引用、500 个名称及长度限制。完整证据和 Base/Head 上下文仍保留；请勿将摘要当作完整审查。'] : [])].slice(0, 100)
     },
     evidence,
     behaviorCards,
