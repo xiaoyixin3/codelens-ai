@@ -1,5 +1,12 @@
 # v1.0 beta release checklist
 
+This checklist governs the production Beta/image release, not approval of a
+local-only engineering preview. The checkmarks below are historical evidence;
+they do not certify a newer commit. The separate
+[local preview](docs/local-preview-release.md) is a GitHub prerelease under
+`v1.0.0-local-preview.*`, without production image publication, live migrations,
+automatic fixes or blocking. Phase 0/1 and production manual gates remain open.
+
 ## Automated gates
 
 - [x] `npm ci`

@@ -126,6 +126,7 @@ relationships remain explicit; suggested plans are not verified fixes.
 See [local review instructions](docs/local-review.md) and the
 [semantic correctness and bounded performance evidence](docs/evidence/semantic-correctness-fix-2026-10-07.md).
 Local usability and engineering regressions do not close the independent Phase 0/1 gates.
+For the downloadable prerelease, see [local preview scope and startup](docs/local-preview-release.md).
 
 ## Local setup for GitHub integration
 
