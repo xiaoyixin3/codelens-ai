@@ -59,5 +59,15 @@ describe('local workbench isolation', () => {
     expect(hostileStatus).toBe(403);
     const page = await fetch(url); expect(page.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
     expect(await page.text()).toContain('CodeLens');
+    let limited = false;
+    for (let i = 0; i < 305; i++) {
+      const response = await fetch(`${url}/api/state`);
+      await response.arrayBuffer();
+      if (response.status === 429) {
+        expect(response.headers.get('retry-after')).toBeTruthy();
+        limited = true; break;
+      }
+    }
+    expect(limited).toBe(true);
   }, 20000);
 });

@@ -1,6 +1,8 @@
-import { lstat, mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import Fastify from 'fastify';
+import rateLimit from '@fastify/rate-limit';
+import { readBoundedRegularFile } from './bounded-file.js';
 import { z } from 'zod';
 import { analyzeLocalReview } from './local-review.js';
 import {
@@ -159,11 +161,7 @@ async function readContextBundles(): Promise<Map<string, ReviewContextBundle>> {
   for (const name of entries.filter((entry) => entry.endsWith('.json')).sort()) {
     const filePath = path.resolve(contextRoot, name);
     if (!filePath.startsWith(`${contextRoot}${path.sep}`)) throw new Error(`Unsafe context path: ${name}`);
-    const linkInfo = await lstat(filePath);
-    if (linkInfo.isSymbolicLink() || !linkInfo.isFile() || linkInfo.size > 25 * 1024 * 1024) {
-      throw new Error(`Context bundle is not a bounded regular file: ${name}`);
-    }
-    const bundle = ReviewContextBundleSchema.parse(JSON.parse(await readFile(filePath, 'utf8')));
+    const bundle = ReviewContextBundleSchema.parse(JSON.parse((await readBoundedRegularFile(filePath, 25 * 1024 * 1024)).toString('utf8')));
     const { digest, ...unsigned } = bundle;
     if (computeReviewContextBundleDigest(unsigned) !== digest) throw new Error(`Context bundle digest mismatch: ${name}`);
     if (bundles.has(bundle.caseId)) throw new Error(`Duplicate context bundle for case ${bundle.caseId}.`);
@@ -305,6 +303,7 @@ function contentType(filePath: string): string {
 }
 
 const app = Fastify({ logger: false, bodyLimit: 64 * 1024 });
+await app.register(rateLimit, { global: true, max: 300, timeWindow: 60_000 });
 const allowedHosts = new Set([`${host}:${port}`, `localhost:${port}`]);
 const allowedOrigins = new Set([...allowedHosts].map((value) => `http://${value}`));
 
@@ -496,12 +495,16 @@ app.get('/*', async (request, reply) => {
     return reply.code(400).send('Invalid path');
   }
   let filePath = candidate;
+  let contents: Buffer;
   try {
-    if (!(await stat(filePath)).isFile()) filePath = path.join(staticRoot, 'index.html');
-  } catch {
+    contents = await readBoundedRegularFile(filePath, 2 * 1024 * 1024);
+  } catch (error) {
+    if (!['ENOENT', 'ENOTDIR', 'EISDIR'].includes((error as NodeJS.ErrnoException).code ?? '') &&
+        !(error instanceof Error && error.message === 'Expected a regular file.')) throw error;
     filePath = path.join(staticRoot, 'index.html');
+    contents = await readBoundedRegularFile(filePath, 2 * 1024 * 1024);
   }
-  return reply.type(contentType(filePath)).send(await readFile(filePath));
+  return reply.type(contentType(filePath)).send(contents);
 });
 
 await app.listen({ host, port });

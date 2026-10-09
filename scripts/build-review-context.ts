@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import path from 'node:path';
+import { FileTooLargeError, readBoundedRegularFile } from './bounded-file.js';
 import {
   computeReviewContextBundleDigest,
   ReplayCaseSchema,
@@ -88,11 +89,12 @@ async function collectFiles(rootPath: string, revision: 'base' | 'head') {
   for (const filePath of paths) {
     const absolute = path.resolve(rootPath, ...filePath.split('/'));
     if (!absolute.startsWith(`${rootPath}${path.sep}`)) throw new Error(`Unsafe repository path: ${filePath}`);
-    const info = await stat(absolute);
-    if (info.size > maxFileBytes) continue;
-    bytes += info.size;
+    let source: Buffer;
+    try { source = await readBoundedRegularFile(absolute, maxFileBytes); }
+    catch (error) { if (error instanceof FileTooLargeError) continue; throw error; }
+    bytes += source.length;
     if (bytes > maxBytes) throw new Error(`${revision} context exceeds max bytes ${maxBytes}.`);
-    const content = await readFile(absolute, 'utf8');
+    const content = source.toString('utf8');
     const detected = language(filePath);
     files.push({ path: filePath, revision, role: role(filePath), ...(detected ? { language: detected } : {}), content });
   }

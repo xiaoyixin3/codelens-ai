@@ -34,10 +34,13 @@ if (process.argv.includes('--rebuild') || !builtAt || (await stat('pom.xml')).mt
   const downloaded = path.join(process.env.USERPROFILE ?? '', 'Downloads/apache-maven-3.9.14-bin/apache-maven-3.9.14/bin/mvn.cmd');
   const maven = process.env.CODELENS_MAVEN ?? (await access(downloaded).then(() => downloaded).catch(() => 'mvn.cmd'));
   // cmd is needed only for the Windows Maven batch executable. Reject shell metacharacters.
-  if (/["\r\n&|<>^%!]/.test(maven)) throw new Error('Unsafe Maven path. Use a plain absolute path.');
+  if (process.platform === 'win32' && maven !== 'mvn.cmd' &&
+      !/^[A-Za-z]:[\\/](?:[A-Za-z0-9 _.\-]+[\\/])*mvn\.cmd$/i.test(maven)) {
+    throw new Error('Unsafe Maven path. Use a plain absolute path ending in mvn.cmd.');
+  }
   console.log('正在构建本地 Java 分析器…');
   const child = process.platform === 'win32'
-    ? spawn(process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', `""${maven}" -q -DskipTests package"`], { stdio: 'inherit', windowsHide: true, windowsVerbatimArguments: true })
+    ? spawn('cmd.exe', ['/d', '/s', '/c', `""${maven}" -q -DskipTests package"`], { stdio: 'inherit', windowsHide: true, windowsVerbatimArguments: true })
     : spawn(process.env.CODELENS_MAVEN ?? 'mvn', ['-q', '-DskipTests', 'package'], { stdio: 'inherit' });
   await new Promise<void>((resolve, reject) => { child.on('error', reject); child.on('exit', code => code === 0 ? resolve() : reject(new Error('Java build failed; check Maven / Java 17+.'))); });
 }

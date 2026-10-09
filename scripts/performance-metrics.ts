@@ -1,3 +1,18 @@
+// Only known local HTTP outcomes enter the archive. Unknown outcomes use the
+// existing failure sentinel 0; arbitrary remote payloads are never recorded.
+export function localHttpStatus(status: number): number {
+  switch (status) {
+    case 200: return 200;
+    case 400: return 400;
+    case 403: return 403;
+    case 409: return 409;
+    case 429: return 429;
+    case 500: return 500;
+    case 503: return 503;
+    default: return 0;
+  }
+}
+
 export function latencySummary(values: number[]) {
   if (!values.length) return { samples: 0, p50Ms: null, p95Ms: null, maxMs: null };
   if (values.some(value => !Number.isFinite(value) || value < 0)) throw new Error('Invalid latency');

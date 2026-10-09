@@ -6,7 +6,7 @@ import os from 'node:os';
 import { createServer } from 'node:net';
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { latencySummary, summarizeLoad, type LoadSample } from './performance-metrics.js';
+import { latencySummary, summarizeLoad, localHttpStatus, type LoadSample } from './performance-metrics.js';
 
 const run = promisify(execFile);
 const overallAbort = new AbortController();
@@ -127,7 +127,7 @@ try {
         body: JSON.stringify({ repository: httpFixture.repository, base: httpFixture.base, head: httpFixture.head }), signal: AbortSignal.any([AbortSignal.timeout(130_000), overallAbort.signal]) });
       const payload = await response.json() as { id?: string; error?: string };
       if (response.status === 200 && !payload.id?.startsWith('local-')) throw new Error('Success without local review ID');
-      return { status: response.status, ms: performance.now() - before };
+      return { status: localHttpStatus(response.status), ms: performance.now() - before };
     } catch { return { status: 0, ms: performance.now() - before }; }
   };
   const warmup = await requestReview();
@@ -144,7 +144,7 @@ try {
       const health = (async () => {
         await delay(20); const before = performance.now();
         try { const response = await fetch(url + '/api/state', { signal: AbortSignal.timeout(5000) }); await response.arrayBuffer();
-          return { status: response.status, ms: performance.now() - before }; }
+          return { status: localHttpStatus(response.status), ms: performance.now() - before }; }
         catch { return { status: 0, ms: performance.now() - before }; }
       })();
       rows.push(...await Promise.all(requests)); healthRows.push(await health);
@@ -157,12 +157,12 @@ try {
   const protections = [];
   for (const route of ['/api/export', '/api/decisions/performance-fixture']) {
     const response = await fetch(url + route, { method: route.includes('decisions') ? 'PUT' : 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
-    protections.push({ route, expected: 403, actual: response.status });
+    protections.push({ route, expected: 403, actual: localHttpStatus(response.status) });
   }
   const hostile = await fetch(url + '/api/state', { headers: { origin: 'https://untrusted.invalid' } });
-  protections.push({ route: 'hostile-origin', expected: 403, actual: hostile.status });
+  protections.push({ route: 'hostile-origin', expected: 403, actual: localHttpStatus(hostile.status) });
   const invalid = await fetch(url + '/api/local/review', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
-  protections.push({ route: 'invalid-input', expected: 400, actual: invalid.status });
+  protections.push({ route: 'invalid-input', expected: 400, actual: localHttpStatus(invalid.status) });
   const passed = semanticReports.every(report => report.complete === true && report.samples.length === 5
     && report.samples.every((row: { equal: boolean }) => row.equal))
     && groups.every(group => group.failures === 0 && group.healthFailures === 0 && group.completed === group.waves)
