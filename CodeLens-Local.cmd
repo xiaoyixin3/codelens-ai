@@ -20,8 +20,8 @@ if errorlevel 1 (
   exit /b 1
 )
 if not exist "node_modules\tsx\package.json" (
-  echo Installing locked CodeLens dependencies. Internet is needed for this step.
-  call npm.cmd ci --ignore-scripts
+  echo Installing locked CodeLens runtime dependencies. Internet is needed for this step.
+  call npm.cmd ci --omit=dev --ignore-scripts
   if errorlevel 1 (
     echo Dependency installation failed. Check the connection and retry.
     pause
