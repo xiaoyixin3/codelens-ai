@@ -1,6 +1,7 @@
 import { access, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { windowsMavenArgs } from './maven-launcher.js';
 
 // Native Node launcher: no PowerShell policy change, GitHub configuration, .env or tunnel.
 process.chdir(path.resolve(import.meta.dirname, '..'));
@@ -31,16 +32,9 @@ async function newer(directory: string, timestamp: number): Promise<boolean> {
 await access('node_modules/tsx');
 const builtAt = await stat(jar).then(info => info.mtimeMs).catch(() => 0);
 if (process.argv.includes('--rebuild') || !builtAt || (await stat('pom.xml')).mtimeMs > builtAt || await newer('src/main/java', builtAt)) {
-  const downloaded = path.join(process.env.USERPROFILE ?? '', 'Downloads/apache-maven-3.9.14-bin/apache-maven-3.9.14/bin/mvn.cmd');
-  const maven = process.env.CODELENS_MAVEN ?? (await access(downloaded).then(() => downloaded).catch(() => 'mvn.cmd'));
-  // cmd is needed only for the Windows Maven batch executable. Reject shell metacharacters.
-  if (process.platform === 'win32' && maven !== 'mvn.cmd' &&
-      !/^[A-Za-z]:[\\/](?:[A-Za-z0-9 _.\-]+[\\/])*mvn\.cmd$/i.test(maven)) {
-    throw new Error('Unsafe Maven path. Use a plain absolute path ending in mvn.cmd.');
-  }
   console.log('正在构建本地 Java 分析器…');
   const child = process.platform === 'win32'
-    ? spawn('cmd.exe', ['/d', '/s', '/c', `""${maven}" -q -DskipTests package"`], { stdio: 'inherit', windowsHide: true, windowsVerbatimArguments: true })
+    ? spawn('java', await windowsMavenArgs(process.cwd()), { stdio: 'inherit', windowsHide: true })
     : spawn(process.env.CODELENS_MAVEN ?? 'mvn', ['-q', '-DskipTests', 'package'], { stdio: 'inherit' });
   await new Promise<void>((resolve, reject) => { child.on('error', reject); child.on('exit', code => code === 0 ? resolve() : reject(new Error('Java build failed; check Maven / Java 17+.'))); });
 }
