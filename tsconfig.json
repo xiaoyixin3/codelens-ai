@@ -26,7 +26,8 @@
       "@codelens/resilience": ["packages/resilience/src/index.ts"],
       "@codelens/risk-review": ["packages/risk-review/src/index.ts"],
       "@codelens/review-core": ["packages/review-core/src/index.ts"],
-      "@codelens/security": ["packages/security/src/index.ts"]
+      "@codelens/security": ["packages/security/src/index.ts"],
+      "@codelens/solution-planning": ["packages/solution-planning/src/index.ts"]
     },
     "types": ["node", "vitest/globals"]
   },

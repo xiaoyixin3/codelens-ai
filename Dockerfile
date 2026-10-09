@@ -18,8 +18,10 @@ RUN npm prune --omit=dev
 
 FROM eclipse-temurin:17-jre-alpine AS runtime
 RUN apk add --no-cache nodejs \
- && addgroup -S codelens \
- && adduser -S -G codelens codelens
+ && addgroup -S -g 10001 codelens \
+ && adduser -S -D -H -u 10001 -G codelens codelens \
+ && mkdir -p /var/lib/codelens/semantic \
+ && chown -R codelens:codelens /var/lib/codelens
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=java-build --chown=codelens:codelens /src/target/codelens-ai.jar ./codelens-ai.jar

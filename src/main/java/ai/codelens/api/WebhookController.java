@@ -2,9 +2,11 @@ package ai.codelens.api;
 
 import ai.codelens.config.RuntimeConfig;
 import ai.codelens.contracts.Models;
+import ai.codelens.migration.MigrationSchemaVerifier;
 import ai.codelens.security.Redactor;
 import ai.codelens.security.WebhookSecurity;
 import ai.codelens.store.JdbcStore;
+import ai.codelens.store.DeliveryConflictException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletRequest;
@@ -35,10 +37,13 @@ public class WebhookController {
     private final JdbcStore store;
     private final RuntimeConfig config;
     private final ObjectMapper json;
+    private final MigrationSchemaVerifier schema;
+    private final ClientAddressResolver clients;
     private final FixedWindowLimiter limiter;
 
-    public WebhookController(JdbcStore store, RuntimeConfig config, ObjectMapper json) {
-        this.store = store; this.config = config; this.json = json;
+    public WebhookController(JdbcStore store, RuntimeConfig config, ObjectMapper json,
+                             MigrationSchemaVerifier schema, ClientAddressResolver clients) {
+        this.store = store; this.config = config; this.json = json; this.schema = schema; this.clients = clients;
         this.limiter = new FixedWindowLimiter(config.webhookRateLimit());
     }
 
@@ -47,7 +52,11 @@ public class WebhookController {
 
     @GetMapping("/readyz")
     public ResponseEntity<Map<String, String>> ready() {
-        try { store.ping(); return ResponseEntity.ok(Map.of("status", "ready")); }
+        try {
+            store.ping();
+            if (!schema.status().ready()) throw new IllegalStateException("schema not ready");
+            return ResponseEntity.ok(Map.of("status", "ready"));
+        }
         catch (RuntimeException exception) {
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(Map.of("status", "not_ready"));
         }
@@ -60,7 +69,7 @@ public class WebhookController {
             @RequestHeader(value = "X-GitHub-Delivery", required = false) String deliveryId,
             @RequestHeader(value = "X-GitHub-Event", required = false) String event,
             HttpServletRequest request) {
-        if (!limiter.allow(clientAddress(request))) return response(HttpStatus.TOO_MANY_REQUESTS, "rate_limit_exceeded", null);
+        if (!limiter.allow(clients.resolve(request))) return response(HttpStatus.TOO_MANY_REQUESTS, "rate_limit_exceeded", null);
         if (blank(signature) || blank(deliveryId) || blank(event)
                 || !WebhookSecurity.verify(body, signature, config.webhookSecret())) {
             return response(HttpStatus.UNAUTHORIZED, "invalid_webhook_signature", null);
@@ -68,20 +77,29 @@ public class WebhookController {
         JsonNode root;
         try { root = json.readTree(body); }
         catch (IOException exception) { return response(HttpStatus.BAD_REQUEST, "invalid_json", null); }
+        if (root == null || !root.isObject()) return response(HttpStatus.BAD_REQUEST, "invalid_json", null);
+        if (config.publicTrial() && !config.permitsTrialRepository(
+                root.path("repository").path("owner").path("login").asText(""),
+                root.path("repository").path("name").asText(""))) {
+            return response(HttpStatus.ACCEPTED, "ignored_outside_public_trial", null);
+        }
+        JdbcStore.DeliveryInput delivery = new JdbcStore.DeliveryInput(deliveryId, event, text(root, "action"), body);
         try {
-            String action = text(root, "action");
-            if (!store.claimDelivery(deliveryId, event, action, body)) return response(HttpStatus.ACCEPTED, "duplicate", null);
-            Result result = switch (event) {
-                case "pull_request" -> pullRequest(root);
-                case "check_run" -> checkRun(root, deliveryId);
-                case "issue_comment" -> issueComment(root);
-                default -> new Result("ignored", null);
-            };
-            store.markDeliveryProcessed(deliveryId, "");
-            return response(HttpStatus.ACCEPTED, result.status(), result.runId());
+            JdbcStore.ProcessedDelivery processed = store.processDelivery(delivery, () -> {
+                Result result = switch (event) {
+                    case "pull_request" -> pullRequest(root);
+                    case "check_run" -> checkRun(root, deliveryId);
+                    case "issue_comment" -> issueComment(root);
+                    default -> new Result("ignored", null);
+                };
+                return new JdbcStore.DeliveryResult(result.status(), result.runId());
+            });
+            return response(HttpStatus.ACCEPTED, processed.duplicate() ? "duplicate" : processed.result().status(), processed.result().runId());
+        } catch (DeliveryConflictException conflict) {
+            return response(HttpStatus.CONFLICT, "delivery_payload_conflict", null);
         } catch (Exception exception) {
             String detail = truncate(Redactor.redact(exception.getMessage()), 2000);
-            try { store.markDeliveryProcessed(deliveryId, detail); } catch (RuntimeException ignored) {}
+            try { store.recordDeliveryFailure(delivery, detail); } catch (RuntimeException ignored) {}
             LOG.error("Webhook processing failed: {}", detail);
             return response(HttpStatus.INTERNAL_SERVER_ERROR, "internal_error", null);
         }
@@ -108,8 +126,8 @@ public class WebhookController {
         long installation = number(root, "installation", "id"); long repository = number(root, "repository", "id");
         String owner = text(root, "repository", "owner", "login"); String repo = text(root, "repository", "name");
         Result result = queue(repository, pull, base, head, installation, owner, repo, "rerun", "rerun:" + deliveryId, "rerun_queued", "rerun_already_queued");
-        if (result.runId() != null && result.status().equals("rerun_queued")) {
-            store.savePublication(new Models.Publication(result.runId(), head, number(root, "check_run", "id"), null));
+        if (result.runId() != null) {
+            store.seedPublication(new Models.Publication(result.runId(), head, number(root, "check_run", "id"), null));
         }
         return result;
     }
@@ -142,10 +160,6 @@ public class WebhookController {
     private static long number(JsonNode node, String... path) { for (String part : path) node = node.path(part); return node.asLong(); }
     private static boolean blank(String value) { return value == null || value.isBlank(); }
     private static String truncate(String value, int max) { value = value == null ? "unknown error" : value; return value.substring(0, Math.min(max, value.length())); }
-    private static String clientAddress(HttpServletRequest request) {
-        String forwarded = request.getHeader("X-Forwarded-For");
-        return forwarded == null || forwarded.isBlank() ? request.getRemoteAddr() : forwarded.split(",", 2)[0].trim();
-    }
     private record Result(String status, String runId) {}
     private static final class FixedWindowLimiter {
         private final int max; private final Map<String, Window> clients = new ConcurrentHashMap<>();

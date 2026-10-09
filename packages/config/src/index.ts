@@ -35,9 +35,22 @@ const EnvSchema = z.object({
 
 export type AppConfig = z.infer<typeof EnvSchema>;
 
+function databaseUrl(env: NodeJS.ProcessEnv): string | undefined {
+  if (!env.CODELENS_DB_HOST?.trim()) return env.DATABASE_URL;
+  if (!env.CODELENS_DB_PASSWORD) throw new Error('CODELENS_DB_PASSWORD is required with CODELENS_DB_HOST');
+  const url = new URL('postgres://localhost');
+  url.hostname = env.CODELENS_DB_HOST.trim();
+  url.port = env.CODELENS_DB_PORT?.trim() || '5432';
+  url.username = env.CODELENS_DB_USER?.trim() || 'codelens';
+  url.password = env.CODELENS_DB_PASSWORD;
+  url.pathname = `/${env.CODELENS_DB_NAME?.trim() || 'codelens'}`;
+  return url.toString();
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const normalized = {
     ...env,
+    DATABASE_URL: databaseUrl(env),
     GITHUB_PRIVATE_KEY: env.GITHUB_PRIVATE_KEY?.replace(/\\n/g, '\n')
   };
   return EnvSchema.parse(normalized);

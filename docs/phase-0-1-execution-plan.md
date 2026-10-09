@@ -1,0 +1,195 @@
+# Phase 0/1 execution plan
+
+Status: in progress  
+Baseline: [`technical-baseline-v2.md`](technical-baseline-v2.md)  
+Decision record: [`adr/0007-phase-0-1-baseline.md`](adr/0007-phase-0-1-baseline.md)
+
+2026-10-03 supplement: [`desktop-proposal-alignment-2026-10-03.md`](desktop-proposal-alignment-2026-10-03.md)
+records the user-supplied reliability proposal, source-verified gaps, and ordered
+production hardening work without changing the baseline exit gates.
+
+## Guardrails
+
+- Do not add languages or shallow detector rules.
+- Do not use generated, assisted, or mutation-only data for product precision or
+  recall claims.
+- Do not execute repository code during materialization or semantic indexing.
+- Do not publish high-risk findings from the fallback graph as semantic evidence.
+- Do not mark either phase complete without every exit criterion and its evidence.
+- Preserve the existing Java production runtime, GitHub delivery semantics,
+  PostgreSQL audit history, and forward-only migration policy.
+
+## Workstream A — Phase 0 real baseline
+
+| Item | Deliverable | Evidence required | Current state |
+|---|---|---|---|
+| Freeze claims | README and ADR identify broad parsing as fallback | Reviewed diff | Implemented |
+| Corpus contract | Root-cause labels, clean PR labels, provenance, reviewer identities, conflicts, and timing fields | Schema tests | Implemented |
+| Candidate intake | At least 50 permissioned real PRs, including at least 20 positive root causes | Immutable manifest with source and permission | Blocked on human corpus selection |
+| Blind labelling | Two independent reviewers; third-person adjudication | Frozen decisions with no prediction exposure | Blocked on reviewers |
+| Current-version replay | Precision, recall, false-positive rate, latency, and cost by repository/category/PR size | Reproducible report and version hashes | Pending corpus |
+| Review-time method | Active first-review timer and crossover protocol | Pilot sessions and exclusion rules | Contract implemented; pilot data pending |
+
+Phase 0 exit decision: **open**. Existing smoke/replay tooling is useful, but the
+repository contains no approved 50-PR/20-positive corpus and no controlled review
+time study. No precision, recall, or time-saving product claim is currently valid.
+
+## Workstream B — Phase 1 repository and semantic foundation
+
+### B1. Contracts and materialization
+
+- Define `RepositoryWorkspace`, `BuildModel`, `SemanticAdapter`, snapshot,
+  relationship, coverage, and degradation contracts.
+- Materialize exact base/head commits into one ephemeral run directory.
+- Validate commit identifiers before invoking Git; do not fetch, run hooks, use
+  checkout filters, or execute repository scripts.
+- Extract archives with zip-slip protection, make base read-only, and delete only
+  a resolved run directory beneath the configured workspace root.
+- Record S1 execution level and cleanup result.
+
+### B2. Java build model
+
+- Detect Maven and Gradle descriptors without invoking them.
+- Discover conventional main/test source roots across modules.
+- Hash the normalized descriptor set to create a reproducible build-model key.
+- Report unknown layouts and unreadable descriptors as degradation reasons.
+
+### B3. Java full-repository semantic adapter
+
+- Parse every eligible Java source in the repository snapshot.
+- Extract types, methods, constructors, fields, annotations, inheritance, and
+  implementations with stable repository-independent keys.
+- Resolve direct calls using Java AST/type information; unresolved calls remain
+  visible and are never upgraded to semantic evidence.
+- Associate JUnit test symbols with directly exercised production symbols.
+- Preserve path, line, parser, confidence, and `typeResolved` provenance on every
+  relationship.
+- Expose indexed/failed/skipped file counts and resolution coverage.
+
+### B4. Snapshot reuse and head increment
+
+- Cache base snapshots by repository + SHA + adapter version + build model hash.
+- Reparse only changed/dependency-affected units for head and reuse unaffected
+  base units.
+- Invalidate reuse when build descriptors or adapter version change.
+- Keep the existing changed-file parser as explicit `diff-only/fallback` output.
+
+### B5. Exit evaluation
+
+- Maintain a separately labelled Java call-resolution fixture containing
+  overloads, interfaces, inheritance, same-named methods, and test callers.
+- Evaluate selected real Java repositories without tuning on the held-out set.
+- Report precision denominator, unresolved rate, parse failures, generated-code
+  exclusions, adapter version, build hash, and commit SHAs.
+- Demonstrate at least one changed callee whose caller and JUnit test are both in
+  unchanged files.
+
+Phase 1 exit decision: **open** until direct-call precision is at least 90% on
+selected Java repositories. Unchanged-file caller/test discovery is now proven
+by the default-off production-path acceptance fixture.
+
+Foundation status on 2026-09-26: B1–B4 are implemented behind standalone
+contracts and tests. Synthetic truth-set and self-repository acceptance evidence
+pass. A fixed-revision Gson source-file truth set also passes 16/16, but was
+labelled by the implementer and covers only one repository. B5 remains open
+because independently labelled, selected real Java repository evidence is still
+required. A fail-closed external truth-set contract and opt-in multi-repository
+runner are ready to receive that evidence.
+
+Evidence-cost refinement: daily development now uses an independent JDK compiler
+oracle and deterministic disagreement queue. Human reviewers receive complete,
+content-addressed context and inspect disagreements plus an agreement sample;
+only qualified, prediction-blind gold labels can affect the formal exit gate.
+The project owner is not expected to perform specialist Java labelling.
+
+The second real-repository silver run (JUnit 4 `r4.13.2`) found seven concrete
+adapter gaps after normalization noise was removed. Adapter v2 fixes explicit
+constructor invocations, annotation-member calls, and anonymous symbol stability;
+the frozen scope now has 105/105 target-call agreement. Because the repository
+was used to develop these fixes, it is development evidence rather than holdout
+evidence and does not close B5.
+
+Two fresh B5 repositories were selected on 2026-09-27 only after a source-only,
+prediction-independent selection policy and sealing tests were implemented and
+passed in the working tree. Apache Commons Lang and jsoup now have complete
+content-addressed context archives covering one compact source file each.
+Neither adapter nor compiler-oracle predictions have been generated for them.
+B5 remains open only for qualified independent labels, adjudication if needed,
+and the subsequent one-time evaluation.
+
+Merge-sequence item 5 is implemented as of 2026-09-27. The worker streams
+authenticated archives for exact base/head SHAs into a bounded S1 workspace,
+indexes and persists Java snapshots, publishes resolved unchanged-file impact
+with explicit coverage, and fails closed to the existing fallback. Activation
+requires both the default-off global switch and an exact repository allowlist;
+see ADR 0009 and
+[`evidence/phase-1-worker-integration-2026-09-27.md`](evidence/phase-1-worker-integration-2026-09-27.md).
+
+The remaining B2 literal-layout gap is implemented as of 2026-09-27. Maven
+source-directory overrides and common explicit Gradle source-set declarations
+are read as data, constrained to existing repository-contained directories, and
+never executed. Dynamic or invalid layouts remain `semantic/partial`; see ADR
+0011 and
+[`evidence/phase-1-custom-source-layouts-2026-09-27.md`](evidence/phase-1-custom-source-layouts-2026-09-27.md).
+
+## Merge sequence
+
+1. Baseline/ADR/evidence report and regression baseline.
+2. Contracts, build model, and S1 local materializer.
+3. Full-repository Java adapter and synthetic truth-set tests.
+4. Persistent snapshot cache and head incremental update.
+5. Production worker integration behind a disabled-by-default semantic feature
+   flag with explicit coverage output.
+6. Real-repository Phase 1 evaluation and continue/adjust/stop decision.
+
+## Definition of evidence for this iteration
+
+This iteration may claim “foundation implemented” only when:
+
+- all existing Java and TypeScript tests still pass;
+- new safety, build-model, full-index, resolved-call, inheritance, and test-map
+  tests pass;
+- the fallback path remains distinguishable in output;
+- the evidence report lists every unmet product exit criterion explicitly.
+
+## 2026-10-04 automated engineering increment (not phase acceptance)
+
+The Java.16 candidate adds deterministic single-block final-request context metadata,
+explicit omissions, and persistent per-physical-send byte/call reservations. Restarts,
+unknown outcomes and telemetry retention do not restore budget; model HTTP is outside
+short database transactions. Existing Java indexing and review logic are reused.
+See [context/budget evidence](evidence/model-context-budget-2026-10-04.md).
+
+This increment needs no specialist labelling or paid model calls and does not touch
+the sealed independent semantic corpus. Multi-block result persistence/resumption,
+local patch preview and sandbox verification remain separate engineering work.
+Phase 0/1 independent quality and actual review-time gates remain open; this is not
+an advancement to a later accepted product phase. Live local trial remains Java.13;
+the new source needs migrations 001–022 and has not been deployed to the live database.
+
+## 2026-10-05 automated engineering increment (not phase acceptance)
+
+Added a production Java read-only local preview backend after option approval,
+bound to indexed Head source hashes and approved actual semantic symbols.
+This renders and checks supplied line edits, not automatic repair synthesis.
+No candidate-use, compile/test or behavioral verification, worker patch publishing,
+assisted UI integration or remote current PR check is claimed. Publication and
+application remain disabled. See [preview evidence](evidence/r3-local-patch-preview-2026-10-05.md).
+
+This needs no owner specialist labeling, paid model or execution of reviewed code.
+Sandbox verification, multi-block result persistence and all Phase 0/1 quality/time
+exit evidence remain open. Candidate version/schema and live trial image are unchanged.
+
+## 2026-10-05 internal execution prototype (not S2 activation)
+
+A separate standard-library Java container probe now reuses approved preview
+material and records bounded source/test/hash plans before running fixed baseline,
+Head-regression and patched-regression steps. Synthetic real containers validate
+success, no reproduction, compile failure, remaining failure, timeout and isolation.
+See [execution evidence](evidence/java-sandbox-prototype-2026-10-05.md).
+
+This has no API/Worker route or permission to execute real PRs. It is not the
+Maven/Gradle/JUnit adapter, production audit/budget or crash-independent execution
+supervisor required for S2 acceptance. All verified-fix/apply/publish flags stay
+false. Phase 0/1 independent quality/time and later sandbox/patch exit gates are
+unchanged; synthetic before-fail/after-pass is engineering evidence, not acceptance.

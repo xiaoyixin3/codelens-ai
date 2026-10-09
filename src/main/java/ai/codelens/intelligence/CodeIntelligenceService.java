@@ -4,6 +4,7 @@ import ai.codelens.config.RuntimeConfig;
 import ai.codelens.contracts.Models;
 import ai.codelens.github.GitHubClient;
 import ai.codelens.store.JdbcStore;
+import ai.codelens.review.ReviewExecutionGuard;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
@@ -30,7 +31,7 @@ import java.util.regex.Pattern;
 @Component
 @Profile("worker")
 public class CodeIntelligenceService {
-    public static final String PARSER_VERSION = "java-native-multilang-v1";
+    public static final String PARSER_VERSION = "regex-multilang-fallback-v1";
     private static final Pattern GO_FUNCTION = Pattern.compile("^\\s*func\\s+(?:\\(\\s*\\w*\\s*\\*?([A-Za-z_]\\w*)[^)]*\\)\\s*)?([A-Za-z_]\\w*)\\s*\\(");
     private static final Pattern GO_TYPE = Pattern.compile("^\\s*type\\s+([A-Za-z_]\\w*)\\s+(?:struct|interface)\\b");
     private static final Pattern TS_DECLARATION = Pattern.compile("^\\s*(?:export\\s+)?(?:default\\s+)?(?:declare\\s+)?(?:async\\s+)?(class|interface|type|enum|function)\\s+([A-Za-z_$][\\w$]*)");
@@ -64,25 +65,26 @@ public class CodeIntelligenceService {
         this.config = config;
     }
 
-    public Result analyze(String reviewRunId, long repositoryId, Models.ReviewJob job, Models.PullRequest pull) {
+    public Result analyze(String reviewRunId, long repositoryId, Models.ReviewJob job, Models.PullRequest pull, ReviewExecutionGuard guard) {
         List<Models.ChangedFile> bounded = pull.files().subList(0, Math.min(pull.files().size(), config.maxChangedFiles()));
-        Snapshot base = indexSide(job, bounded, pull.baseSha(), "base");
-        Snapshot head = indexSide(job, bounded, pull.headSha(), "head");
+        Snapshot base = indexSide(job, bounded, pull.baseSha(), "base", guard);
+        Snapshot head = indexSide(job, bounded, pull.headSha(), "head", guard);
         base = resolveEdges(base);
         head = resolveEdges(head);
         List<Change> changes = compare(base.symbols(), head.symbols());
         List<Impact> impacts = trace(changes, base, head, 2, 12);
         Models.ImpactSummary summary = summarize(changes, impacts, base, head);
         Result result = new Result(base, head, changes, impacts, summary);
-        store.saveIntelligence(reviewRunId, repositoryId, pull.baseSha(), result);
+        guard.write(() -> store.saveIntelligence(reviewRunId, repositoryId, pull.baseSha(), result));
         return result;
     }
 
-    private Snapshot indexSide(Models.ReviewJob job, List<Models.ChangedFile> files, String commit, String side) {
+    private Snapshot indexSide(Models.ReviewJob job, List<Models.ChangedFile> files, String commit, String side, ReviewExecutionGuard guard) {
         List<IndexedFile> indexed = new ArrayList<>();
         List<Symbol> symbols = new ArrayList<>();
         List<Edge> edges = new ArrayList<>();
         for (Models.ChangedFile file : files) {
+            guard.check();
             String path = side.equals("base") && !file.previousPath().isBlank() ? file.previousPath() : file.path();
             String language = language(path);
             if (language == null) { indexed.add(new IndexedFile(path, "", "", "skipped", "unsupported_language")); continue; }

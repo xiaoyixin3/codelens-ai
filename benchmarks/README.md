@@ -39,16 +39,54 @@ requests that introduced them, validates each repository license, and preserves
 the result under the ignored `benchmarks/candidates/` directory. Its suggestions
 are discovery aids only; every case still requires human review and approval.
 
-Start the local-only review workbench after collecting the queue:
+Freeze the neutral repository context for each case from two clean worktrees at
+the exact replay SHAs. Supplying semantic snapshots adds symbol definitions and
+call/test relationships; omitting them is recorded as a visible limitation.
 
 ```bash
-npm run benchmark:label
+npm run benchmark:context -- \
+  --input=benchmarks/candidates/public-prs.jsonl \
+  --case=<case-id> \
+  --base-root=<clean-base-worktree> \
+  --head-root=<clean-head-worktree> \
+  --base-semantic=<optional-base-index.json> \
+  --head-semantic=<optional-head-index.json>
 ```
 
-Open `http://127.0.0.1:4310`. The workbench stores atomic draft decisions in
-`benchmarks/candidates/review-decisions.json` and only exports
-`benchmarks/candidates/approved-replay.jsonl` after all 100 cases have an
-explicit human approval. Both files stay ignored by Git.
+Start the local-only formal gold workbench after collecting and freezing the
+queue:
+
+```bash
+npm run benchmark:label -- --mode=gold
+```
+
+Open `http://127.0.0.1:4310`. Gold mode never generates or returns CodeLens
+predictions. It exposes frozen base/head files, symbols, relationships, tests,
+and the diff, and saves root-cause labels only after trigger, impact, evidence,
+verification, and confidence are complete. Cases without a valid context packet
+can only be deferred.
+
+The workbench stores atomic decisions in
+`benchmarks/candidates/review-reasoning-decisions.json` and exports
+`benchmarks/candidates/review-reasoning-frozen.jsonl` only after every case is
+frozen. Existing `blind-v1` decisions are read-only drafts: they can prefill a
+form, but cannot be frozen until the missing reasoning fields are supplied, and
+the original file is never overwritten. All candidate artifacts stay ignored by
+Git.
+
+For product exploration or silver labels, use a separate decision file and
+explicit assisted mode. Assisted output must not be mixed into the formal gold
+set.
+
+```bash
+npm run benchmark:label -- \
+  --mode=assisted \
+  --decisions=benchmarks/candidates/assisted-review-reasoning-decisions.json \
+  --output=benchmarks/candidates/assisted-review-reasoning.jsonl
+```
+
+See [`docs/review-reasoning-workbench-r1.md`](../docs/review-reasoning-workbench-r1.md)
+for the contract, mode isolation, and operating procedure.
 
 The release gate defaults also require at least 20 positive cases (one or more
 confirmed findings) and 20 negative cases (no confirmed findings). Override the

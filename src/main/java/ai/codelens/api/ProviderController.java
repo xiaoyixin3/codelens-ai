@@ -27,26 +27,27 @@ import java.util.UUID;
 public class ProviderController {
     private static final Set<String> KINDS = Set.of("openai_compatible", "openai_responses", "anthropic");
     private final ProviderStore store; private final RuntimeConfig config; private final CredentialVault vault;
+    private final AdminRequestAuthorizer authorizer;
     private final HttpClient http = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build();
 
-    public ProviderController(ProviderStore store, RuntimeConfig config) {
-        this.store = store; this.config = config;
+    public ProviderController(ProviderStore store, RuntimeConfig config, AdminRequestAuthorizer authorizer) {
+        this.store = store; this.config = config; this.authorizer = authorizer;
         this.vault = config.credentialKey().isBlank() ? null : new CredentialVault(config.credentialKey());
     }
 
     @GetMapping
     public ResponseEntity<?> list(@RequestHeader Map<String,String> headers) {
-        Auth auth = authorize(headers); if (auth.error() != null) return auth.error();
+        var auth = authorize(headers); if (auth.error() != null) return auth.error();
         return ResponseEntity.ok(Map.of("providers", store.list(auth.installationId())));
     }
     @GetMapping("/{id}")
     public ResponseEntity<?> get(@PathVariable String id, @RequestHeader Map<String,String> headers) {
-        Auth auth = authorize(headers); if (auth.error() != null) return auth.error();
+        var auth = authorize(headers); if (auth.error() != null) return auth.error();
         try { return ResponseEntity.ok(store.get(auth.installationId(), id)); } catch (RuntimeException error) { return storeError(error); }
     }
     @PostMapping
     public ResponseEntity<?> create(@RequestBody CreateRequest request, @RequestHeader Map<String,String> headers) {
-        Auth auth = authorize(headers); if (auth.error() != null) return auth.error();
+        var auth = authorize(headers); if (auth.error() != null) return auth.error();
         String kind = trim(request.providerKind()); String base = trim(request.baseUrl());
         if (base.isBlank()) base = defaultBase(kind);
         String invalid = validate(trim(request.name()), kind, base, trim(request.apiKey()), trim(request.defaultModel()),
@@ -63,7 +64,7 @@ public class ProviderController {
     }
     @PatchMapping("/{id}")
     public ResponseEntity<?> update(@PathVariable String id, @RequestBody UpdateRequest request, @RequestHeader Map<String,String> headers) {
-        Auth auth = authorize(headers); if (auth.error() != null) return auth.error();
+        var auth = authorize(headers); if (auth.error() != null) return auth.error();
         try {
             var current = store.get(auth.installationId(), id);
             String name = request.name() == null ? current.name() : trim(request.name());
@@ -79,7 +80,7 @@ public class ProviderController {
     }
     @PostMapping("/{id}/rotate-secret")
     public ResponseEntity<?> rotate(@PathVariable String id, @RequestBody RotateRequest request, @RequestHeader Map<String,String> headers) {
-        Auth auth = authorize(headers); if (auth.error() != null) return auth.error(); String secret = trim(request.apiKey());
+        var auth = authorize(headers); if (auth.error() != null) return auth.error(); String secret = trim(request.apiKey());
         if (secret.isBlank() || secret.length() > 16_384) return invalid("apiKey is required and must not exceed 16 KB");
         try {
             store.get(auth.installationId(), id);
@@ -89,7 +90,7 @@ public class ProviderController {
     }
     @PostMapping("/{id}/test")
     public ResponseEntity<?> test(@PathVariable String id, @RequestHeader Map<String,String> headers) {
-        Auth auth = authorize(headers); if (auth.error() != null) return auth.error();
+        var auth = authorize(headers); if (auth.error() != null) return auth.error();
         try {
             var provider = store.get(auth.installationId(), id);
             String secret = vault.open(provider.credentialCiphertext(), context(auth.installationId(), id));
@@ -102,22 +103,14 @@ public class ProviderController {
     }
     @DeleteMapping("/{id}")
     public ResponseEntity<?> delete(@PathVariable String id, @RequestHeader Map<String,String> headers) {
-        Auth auth = authorize(headers); if (auth.error() != null) return auth.error();
+        var auth = authorize(headers); if (auth.error() != null) return auth.error();
         try { store.delete(auth.installationId(), id, auth.actor()); return ResponseEntity.noContent().build(); }
         catch (RuntimeException error) { return storeError(error); }
     }
 
-    private Auth authorize(Map<String,String> headers) {
-        if (vault == null || config.modelAdminToken().isBlank()) return new Auth(0,"",ResponseEntity.notFound().build());
-        String authorization = header(headers, "authorization");
-        String token = authorization.startsWith("Bearer ") ? authorization.substring(7).trim() : "";
-        if (token.isBlank() || !CredentialVault.tokenMatches(token, config.modelAdminToken())) return new Auth(0,"",error(HttpStatus.UNAUTHORIZED,"invalid_admin_token"));
-        long installation;
-        try { installation = Long.parseLong(header(headers, "x-codelens-installation-id")); }
-        catch (NumberFormatException exception) { return new Auth(0,"",error(HttpStatus.BAD_REQUEST,"invalid_installation_id")); }
-        if (installation < 1) return new Auth(0,"",error(HttpStatus.BAD_REQUEST,"invalid_installation_id"));
-        String actor = trim(header(headers, "x-codelens-actor")); if (actor.isBlank()) actor = "model-admin-token";
-        return new Auth(installation, actor.substring(0, Math.min(200, actor.length())), null);
+    private AdminRequestAuthorizer.Result authorize(Map<String,String> headers) {
+        if (vault == null) return new AdminRequestAuthorizer.Result(0, "", ResponseEntity.notFound().build());
+        return authorizer.authorize(headers);
     }
     static String validate(String name, String kind, String base, String key, String model, int timeout, int retries, boolean allowPrivate) {
         if (name.isBlank() || name.length() > 100) return "name must contain between 1 and 100 characters";
@@ -154,7 +147,6 @@ public class ProviderController {
     private static String defaultBase(String kind) { return kind.equals("anthropic") ? "https://api.anthropic.com" : "https://api.openai.com/v1"; }
     private static String context(long installation, String id) { return "installation:" + installation + ":connection:" + id; }
     private static String trim(String value) { return value == null ? "" : value.trim(); }
-    private static String header(Map<String,String> headers, String name) { return headers.entrySet().stream().filter(e -> e.getKey().equalsIgnoreCase(name)).map(Map.Entry::getValue).findFirst().orElse(""); }
     private static String json(String value) { return value.replace("\\", "\\\\").replace("\"", "\\\""); }
     private static String truncate(String value, int max) { value = value == null ? "provider request failed" : value; return value.substring(0, Math.min(max, value.length())); }
     private static ResponseEntity<Map<String,String>> invalid(String detail) { return ResponseEntity.unprocessableEntity().body(Map.of("error","invalid_provider","detail",detail)); }
@@ -167,6 +159,5 @@ public class ProviderController {
     public record CreateRequest(String name, String providerKind, String baseUrl, String apiKey, String defaultModel, Boolean enabled, Integer timeoutSeconds, Integer maxRetries) {}
     public record UpdateRequest(String name, String baseUrl, String defaultModel, Boolean enabled, Integer timeoutSeconds, Integer maxRetries) {}
     public record RotateRequest(String apiKey) {}
-    private record Auth(long installationId, String actor, ResponseEntity<?> error) {}
     private record TestResult(boolean ok, int httpStatus, String detail) {}
 }

@@ -6,6 +6,21 @@ All notable changes to CodeLens AI are documented in this file. The project foll
 
 ### Changed
 
+- Added strict production-mode startup validation, schema-aware readiness,
+  immutable migration checksums, and a shared migration advisory lock.
+- Hardened production containers with fixed non-root identity, read-only root
+  filesystems, dropped capabilities, resource limits, and a dedicated semantic
+  workspace volume.
+- Added explicit trusted-proxy handling, API security headers, and health-only
+  public Actuator exposure.
+- Added default-off Java whole-repository semantic impact analysis, persistent
+  semantic snapshots/audits, controlled dependency JARs, and safe custom source layouts.
+- Connected reuse-first candidate retrieval to the production Java whole-repository
+  graph with exact symbol/relationship evidence, SHA and index provenance, persistent
+  audit records, visible GitHub summaries, and a fail-closed patch gate.
+- Added installation-scoped production APIs for provenance-bound reuse decisions and
+  selected solution options, with append-only revisions, stale-write protection, and
+  explicit rejection evidence before a new implementation can be approved.
 - Replaced the production Go runtime with Java 17 and Spring Boot for the webhook API, worker, migration runner, GitHub App client, repository policy, review intelligence, and publication pipeline.
 - Ported the V2 model-provider control plane, AES-GCM credential vault, connection testing, and audit persistence to the Java API.
 - Switched Maven tests, Java CodeQL, Maven Dependabot, local beta startup, Compose, and the production container to the Java runtime while retaining Go only as an explicit rollback layer.

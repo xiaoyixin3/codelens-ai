@@ -1,14 +1,19 @@
 package ai.codelens.config;
 
 import java.net.URI;
+import java.util.Arrays;
+import java.util.Locale;
+import java.util.Set;
 
 public record RuntimeConfig(
+        String environment,
         String mode,
         String databaseUrl,
         String githubAppId,
         String githubPrivateKey,
         String webhookSecret,
         int webhookRateLimit,
+        boolean trustProxy,
         int maxChangedFiles,
         int maxPatchChars,
         int maxInlineComments,
@@ -25,16 +30,33 @@ public record RuntimeConfig(
         String migrationsDir,
         String modelAdminToken,
         String credentialKey,
-        boolean allowPrivateModels
+        boolean allowPrivateModels,
+        boolean semanticEnabled,
+        Set<String> semanticRepositories,
+        String semanticWorkspaceRoot,
+        long semanticMaxArchiveBytes,
+        long semanticMaxExtractedBytes,
+        int semanticMaxEntries,
+        int semanticMaxFiles,
+        long semanticMaxFileBytes,
+        String semanticDependencyCache,
+        int semanticMaxDependencyJars,
+        long semanticMaxDependencyJarBytes
 ) {
+    public RuntimeConfig {
+        semanticRepositories = semanticRepositories == null ? Set.of() : Set.copyOf(semanticRepositories);
+    }
+
     public static RuntimeConfig fromEnvironment() {
         RuntimeConfig config = new RuntimeConfig(
+                env("CODELENS_ENVIRONMENT", "development").trim().toLowerCase(Locale.ROOT),
                 System.getProperty("codelens.mode", env("CODELENS_MODE", "api")),
                 env("DATABASE_URL", "postgres://codelens:codelens@localhost:5432/codelens"),
                 env("GITHUB_APP_ID", ""),
                 env("GITHUB_PRIVATE_KEY", "").replace("\\n", "\n"),
                 env("GITHUB_WEBHOOK_SECRET", "development-webhook-secret"),
                 integer("WEBHOOK_RATE_LIMIT_MAX", 300),
+                Boolean.parseBoolean(env("CODELENS_TRUST_PROXY", "false")),
                 integer("MAX_CHANGED_FILES", 100),
                 integer("MAX_PATCH_CHARS", 120_000),
                 integer("MAX_INLINE_COMMENTS", 8),
@@ -44,7 +66,18 @@ public record RuntimeConfig(
                 integer("LLM_MAX_CALLS_PER_RUN", 4), integer("LLM_MAX_INPUT_CHARS_PER_RUN", 250_000),
                 integer("WORKER_CONCURRENCY", 2), env("MIGRATIONS_DIR", "infra/migrations"),
                 env("CODELENS_MODEL_ADMIN_TOKEN", ""), env("CODELENS_CREDENTIAL_KEY", ""),
-                Boolean.parseBoolean(env("CODELENS_ALLOW_PRIVATE_MODEL_ENDPOINTS", "false"))
+                Boolean.parseBoolean(env("CODELENS_ALLOW_PRIVATE_MODEL_ENDPOINTS", "false")),
+                Boolean.parseBoolean(env("CODELENS_SEMANTIC_ENABLED", "false")),
+                csvSet(env("CODELENS_SEMANTIC_REPOSITORIES", "")),
+                env("CODELENS_SEMANTIC_WORKSPACE_ROOT", ".codelens-workspaces/semantic"),
+                longValue("CODELENS_SEMANTIC_MAX_ARCHIVE_BYTES", 512L * 1024 * 1024),
+                longValue("CODELENS_SEMANTIC_MAX_EXTRACTED_BYTES", 2L * 1024 * 1024 * 1024),
+                integer("CODELENS_SEMANTIC_MAX_ENTRIES", 200_000),
+                integer("CODELENS_SEMANTIC_MAX_FILES", 50_000),
+                longValue("CODELENS_SEMANTIC_MAX_FILE_BYTES", 2L * 1024 * 1024),
+                env("CODELENS_SEMANTIC_DEPENDENCY_CACHE", ""),
+                integer("CODELENS_SEMANTIC_MAX_DEPENDENCY_JARS", 512),
+                longValue("CODELENS_SEMANTIC_MAX_DEPENDENCY_JAR_BYTES", 128L * 1024 * 1024)
         );
         config.validate();
         return config;
@@ -69,9 +102,53 @@ public record RuntimeConfig(
         return userInfo != null && userInfo.contains(":") ? userInfo.split(":", 2)[1] : "";
     }
 
-    private void validate() {
+    public boolean production() { return environment.equals("production"); }
+
+    public boolean publicTrial() { return Boolean.parseBoolean(env("CODELENS_PUBLIC_TRIAL", "false")); }
+
+    public boolean frozenPublicationsEnabled() { return Boolean.parseBoolean(env("CODELENS_FREEZE_PUBLICATIONS", "false")); }
+    public String publicationKey() { return env("CODELENS_PUBLICATION_KEY", ""); }
+
+    static void validateFrozenPublications(String enabled, String key) {
+        if (!Set.of("true", "false").contains(enabled.toLowerCase(Locale.ROOT))) {
+            throw new IllegalArgumentException("CODELENS_FREEZE_PUBLICATIONS must be true or false");
+        }
+        if (Boolean.parseBoolean(enabled)) new ai.codelens.credentials.CredentialVault(key);
+    }
+
+    public boolean permitsTrialRepository(String owner, String repo) {
+        return trialRepositoryAllowed(publicTrial(), csvSet(env("CODELENS_PUBLIC_TRIAL_REPOSITORIES", "")), owner, repo);
+    }
+
+    static boolean trialRepositoryAllowed(boolean enabled, Set<String> repositories, String owner, String repo) {
+        return !enabled || repositories.contains((owner + "/" + repo).toLowerCase(Locale.ROOT));
+    }
+
+    static void validatePublicTrial(String enabled, String repositories) {
+        if (!Set.of("true", "false").contains(enabled.toLowerCase(Locale.ROOT))) {
+            throw new IllegalArgumentException("CODELENS_PUBLIC_TRIAL must be true or false");
+        }
+        if (Boolean.parseBoolean(enabled) && (csvSet(repositories).isEmpty()
+                || csvSet(repositories).stream().anyMatch(value -> !value.matches("[a-z0-9_.-]+/[a-z0-9_.-]+")))) {
+            throw new IllegalArgumentException("public trial requires explicit owner/repository entries");
+        }
+    }
+
+    public void validate() {
+        validateFrozenPublications(env("CODELENS_FREEZE_PUBLICATIONS", "false"), publicationKey());
+        validatePublicTrial(env("CODELENS_PUBLIC_TRIAL", "false"), env("CODELENS_PUBLIC_TRIAL_REPOSITORIES", ""));
+        if (!Set.of("development", "test", "production").contains(environment)) {
+            throw new IllegalArgumentException("CODELENS_ENVIRONMENT must be development, test, or production");
+        }
+        if (!Set.of("api", "worker", "migrate", "publication-inspect").contains(mode.trim().toLowerCase(Locale.ROOT))) {
+            throw new IllegalArgumentException("CODELENS_MODE must be api, worker, migrate, or publication-inspect");
+        }
         if (webhookSecret.length() < 16) throw new IllegalArgumentException("GITHUB_WEBHOOK_SECRET must contain at least 16 characters");
-        if (maxChangedFiles < 1 || maxPatchChars < 1 || maxInlineComments < 0 || maxIndexFileBytes < 1 || workerConcurrency < 1) {
+        if (maxChangedFiles < 1 || maxPatchChars < 1 || maxInlineComments < 0 || maxIndexFileBytes < 1 || workerConcurrency < 1
+                || llmMaxCalls < 1 || llmMaxInputChars < 1
+                || semanticWorkspaceRoot.isBlank() || semanticMaxArchiveBytes < 1 || semanticMaxExtractedBytes < 1
+                || semanticMaxEntries < 1 || semanticMaxFiles < 1 || semanticMaxFileBytes < 1
+                || semanticMaxDependencyJars < 1 || semanticMaxDependencyJarBytes < 1) {
             throw new IllegalArgumentException("numeric limits are invalid");
         }
         requireTogether("LLM", llmBaseUrl, llmApiKey, llmModel);
@@ -81,6 +158,37 @@ public record RuntimeConfig(
         }
         if (!modelAdminToken.isBlank() && modelAdminToken.length() < 32) {
             throw new IllegalArgumentException("CODELENS_MODEL_ADMIN_TOKEN must contain at least 32 characters");
+        }
+        if (semanticRepositories.stream().anyMatch(value -> !value.matches("[^/\\s]+/[^/\\s]+"))) {
+            throw new IllegalArgumentException("CODELENS_SEMANTIC_REPOSITORIES must contain owner/repository entries");
+        }
+        if (semanticEnabled && semanticRepositories.isEmpty()) {
+            throw new IllegalArgumentException("CODELENS_SEMANTIC_REPOSITORIES is required when semantic analysis is enabled");
+        }
+        if (production()) validateProduction();
+    }
+
+    private void validateProduction() {
+        if (databasePassword().length() < 16 || databasePassword().equals("codelens")
+                || databasePassword().contains("replace-with")) {
+            throw new IllegalArgumentException("production database credentials must use a non-default password of at least 16 characters");
+        }
+        String normalizedMode = mode.trim().toLowerCase(Locale.ROOT);
+        if (normalizedMode.equals("api") && (webhookSecret.length() < 32
+                || webhookSecret.equals("development-webhook-secret") || webhookSecret.contains("replace-with"))) {
+            throw new IllegalArgumentException("production API requires a high-entropy GITHUB_WEBHOOK_SECRET of at least 32 characters");
+        }
+        if (Set.of("worker", "publication-inspect").contains(normalizedMode)) {
+            if (!githubAppId.matches("[1-9][0-9]*")) {
+                throw new IllegalArgumentException("production worker/inspection requires a numeric GITHUB_APP_ID");
+            }
+            if (!githubPrivateKey.startsWith("-----BEGIN ") || !githubPrivateKey.contains("PRIVATE KEY-----")
+                    || !githubPrivateKey.contains("-----END ")) {
+                throw new IllegalArgumentException("production worker/inspection requires a PEM GITHUB_PRIVATE_KEY");
+            }
+        }
+        if (!semanticDependencyCache.isBlank() && !java.nio.file.Path.of(semanticDependencyCache).isAbsolute()) {
+            throw new IllegalArgumentException("production semantic dependency cache path must be absolute");
         }
     }
 
@@ -94,6 +202,17 @@ public record RuntimeConfig(
     private static int integer(String name, int fallback) {
         try { return Integer.parseInt(env(name, Integer.toString(fallback))); }
         catch (NumberFormatException ignored) { return fallback; }
+    }
+    private static long longValue(String name, long fallback) {
+        try { return Long.parseLong(env(name, Long.toString(fallback))); }
+        catch (NumberFormatException ignored) { return fallback; }
+    }
+    private static Set<String> csvSet(String value) {
+        if (value == null || value.isBlank()) return Set.of();
+        return Arrays.stream(value.split(","))
+                .map(String::trim).filter(item -> !item.isBlank())
+                .map(item -> item.toLowerCase(Locale.ROOT))
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
     }
     private static String trimSlash(String value) { return value.replaceFirst("/+$", ""); }
 }

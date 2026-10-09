@@ -22,6 +22,7 @@ const required = [
   'target/codelens-ai.jar',
   'dist/beta-readiness.js',
   'dist/collect-positive-benchmark.js',
+  'dist/phase0-evidence.js',
   'dist/benchmark-labeler.js',
   'dist/local-beta.js',
   'dist/github-preflight.js',

@@ -7,7 +7,7 @@ import java.util.List;
 import java.util.Map;
 
 public final class Models {
-    public static final String PIPELINE_VERSION = "v1.0.0-beta.1-java.1";
+    public static final String PIPELINE_VERSION = "v1.0.0-beta.1-java.16";
     public static final String DEFAULT_CONFIG_HASH = "default-v1";
 
     private Models() {}
@@ -20,6 +20,12 @@ public final class Models {
             return reviewRunId != null && !reviewRunId.isBlank() && installationId > 0
                     && notBlank(owner) && notBlank(repo) && pullNumber > 0
                     && baseSha != null && baseSha.length() >= 7 && headSha != null && headSha.length() >= 7;
+        }
+    }
+
+    public record PullRequestRevision(String baseSha, String headSha) {
+        public boolean matches(ReviewJob job) {
+            return job.baseSha().equals(baseSha) && job.headSha().equals(headSha);
         }
     }
 
@@ -54,7 +60,27 @@ public final class Models {
     }
 
     public record FileSummary(String path, String change) {}
-    public record Coverage(int reviewedFiles, int totalFiles, boolean truncated) {}
+    public record Coverage(
+            int reviewedFiles,
+            int totalFiles,
+            boolean truncated,
+            String analysisLevel,
+            String executionLevel,
+            List<String> limitations
+    ) {
+        public Coverage(int reviewedFiles, int totalFiles, boolean truncated) {
+            this(reviewedFiles, totalFiles, truncated, "diff-only/fallback", "S0",
+                    List.of("Only changed-file diff and bounded source context were analyzed.",
+                            "Callers and tests in unchanged files are not visible in this production path.",
+                            "Repository code, builds, and tests were not executed."));
+        }
+
+        public Coverage {
+            analysisLevel = analysisLevel == null || analysisLevel.isBlank() ? "unknown" : analysisLevel;
+            executionLevel = executionLevel == null || executionLevel.isBlank() ? "unknown" : executionLevel;
+            limitations = limitations == null ? List.of() : List.copyOf(limitations);
+        }
+    }
     public record ImpactPath(String changedName, String impactedName, int depth, double score) {}
     public record ImpactSummary(
             String level, int score, int changedSymbols, int impactedSymbols,
@@ -93,6 +119,9 @@ public final class Models {
         public ChangeSummary withPolicy(PolicySummary value) {
             return new ChangeSummary(intent, overview, files, riskLevel, riskReasons, coverage, findings, impact, value);
         }
+        public ChangeSummary withCoverage(Coverage value) {
+            return new ChangeSummary(intent, overview, files, riskLevel, riskReasons, value, findings, impact, policy);
+        }
     }
 
     public record Annotation(
@@ -106,7 +135,7 @@ public final class Models {
     ) {}
 
     public record Publication(String reviewRunId, String headSha, Long checkRunId, Long summaryCommentId) {}
-    public record ClaimedJob(String id, ReviewJob payload, int attempts) {}
+    public record ClaimedJob(String id, ReviewJob payload, int attempts, long leaseGeneration) {}
 
     public record RepositoryPolicy(
             String hash, String sourceCommitSha, String language, boolean blocking, int maxInlineComments,
